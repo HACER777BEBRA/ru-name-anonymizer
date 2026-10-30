@@ -1,6 +1,6 @@
 # Лицензия данных
 
-Файл `src/ru_name_anonymizer/names.tsv.gz` — производная работа от словаря OpenCorpora
+Файл `src/ru_name_anonymizer/names.txt` — производная работа от словаря OpenCorpora
 (пакет `pymorphy2-dicts-ru`, http://opencorpora.org), распространяемого под
 [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/).
 

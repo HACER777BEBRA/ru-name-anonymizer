@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ru-name-anonymizer"
-version = "0.1.0"
+version = "0.2.0"
 description = "Анонимизация русских имён, отчеств и фамилий без ML и тяжёлых зависимостей"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -24,7 +24,7 @@ dev = ["pytest", "ruff"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-ru_name_anonymizer = ["names.tsv.gz"]
+ru_name_anonymizer = ["names.txt"]
 
 [tool.ruff]
 line-length = 100

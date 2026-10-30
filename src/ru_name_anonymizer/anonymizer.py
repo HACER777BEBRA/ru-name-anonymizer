@@ -1,11 +1,8 @@
-import gzip
 import random
 import re
-from functools import lru_cache
-from importlib import resources
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
-CASES = ("nomn", "gent", "datv", "accs", "ablt", "loct")
+from ru_name_anonymizer.dictionary import Entry, declension, load, lookup
 
 _FIRST_POOL = {
     "m": [
@@ -103,26 +100,12 @@ _PATR_F_RE = re.compile(r"^([А-ЯЁ][а-яё]*?(?:ов|ев))(на|ны|не|н
 _SURN_RE = re.compile(r"^([А-ЯЁ][а-яё]+?(?:ов|ев|ёв|ин|ын))(а|у|ым|е|ой)?$")
 _RUN_GAP = re.compile(r"^[  ]+$")
 
-_Form = Tuple[str, str, str]  # (лемма, род, падеж)
-
-
-@lru_cache(maxsize=1)
-def _load() -> Tuple[Dict[str, List[_Form]], Dict[str, Dict[str, str]]]:
-    forms: Dict[str, List[_Form]] = {}
-    lemmas: Dict[str, Dict[str, str]] = {}
-    data = resources.files("ru_name_anonymizer").joinpath("names.tsv.gz").read_bytes()
-    for line in gzip.decompress(data).decode("utf-8").splitlines():
-        lemma, gender, case, form = line.split("\t")
-        forms.setdefault(form, []).append((lemma, gender, case))
-        lemmas.setdefault(lemma, {})[case] = form
-    return forms, lemmas
-
 
 def _classify(token: str):
     """Возвращает (роль, данные) для слова с заглавной буквы."""
-    forms, _ = _load()
-    if token in forms:
-        return "first", forms[token][0]
+    entry = lookup(token)
+    if entry:
+        return "first", entry
     m = _PATR_M_RE.match(token)
     if m:
         return "patr", (m.group(1), "m", _PATR_M[m.group(2) or ""])
@@ -146,12 +129,9 @@ def _runs(text: str) -> List[List[re.Match]]:
     return runs
 
 
-def _surname_form(token: str, gender: str, case: str) -> Tuple[str, str]:
-    m = _SURN_RE.match(token)
-    ending = m.group(2) or ""
-    if gender == "f":
-        return m.group(1), _SURN_F.get(ending, "nomn")
-    return m.group(1), _SURN_M.get(ending, "nomn")
+def preload() -> None:
+    """Загружает словарь заранее, чтобы первый вызов не тормозил."""
+    load()
 
 
 def anonymize_names(text: str, rng: Optional[random.Random] = None) -> str:
@@ -159,7 +139,6 @@ def anonymize_names(text: str, rng: Optional[random.Random] = None) -> str:
     if not text:
         return text
     rng = rng or random
-    forms, lemmas = _load()
 
     replacements: List[Tuple[int, int, str]] = []
     used: Set[str] = set()
@@ -182,7 +161,7 @@ def anonymize_names(text: str, rng: Optional[random.Random] = None) -> str:
     for roles, gender, case in plans:
         for m, role, data in roles:
             if role == "first":
-                new = _new_first(data, gender, case, lemmas, used, rng)
+                new = _new_first(data, gender, used, rng)
             elif role == "patr":
                 new = _new_patr(data, used, rng)
             elif role == "surn":
@@ -209,13 +188,13 @@ def _pick(candidates: List[str], used: Set[str], rng) -> str:
     return rng.choice(free or candidates)
 
 
-def _new_first(data: _Form, run_gender, run_case, lemmas, used, rng) -> str:
+def _new_first(data: Entry, run_gender: str, used: Set[str], rng) -> str:
     _, gender, case = data
     if gender == "c":
         gender = run_gender if run_gender in ("m", "f") else "m"
     lemma = _pick(_FIRST_POOL[gender], used, rng)
-    table = lemmas.get(lemma, {})
-    return table.get(case) or table.get("nomn", lemma)
+    table = declension(lemma)
+    return table.get(case) or table["nomn"]
 
 
 def _new_patr(data, used, rng) -> str:

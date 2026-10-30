@@ -1,9 +1,8 @@
-"""Собирает src/ru_name_anonymizer/names.tsv.gz из словаря pymorphy2 (OpenCorpora).
+"""Собирает src/ru_name_anonymizer/names.txt из словаря pymorphy2 (OpenCorpora).
 
 Запуск: python tools/build_names.py  (нужен pymorphy2==0.9.1, pymorphy2-dicts-ru, setuptools<81)
 """
 
-import gzip
 import inspect
 import sys
 from pathlib import Path
@@ -13,9 +12,18 @@ inspect.getargspec = lambda f: inspect.getfullargspec(f)[:4]
 
 import pymorphy2  # noqa: E402
 
+SRC = Path(__file__).resolve().parent.parent / "src"
+sys.path.insert(0, str(SRC))
+from ru_name_anonymizer import dictionary  # noqa: E402
+
 MIN_NAME_WEIGHT = 0.5
 CASES = ("nomn", "gent", "datv", "accs", "ablt", "loct")
-OUT = Path(__file__).resolve().parent.parent / "src" / "ru_name_anonymizer" / "names.tsv.gz"
+OUT = SRC / "ru_name_anonymizer" / "names.txt"
+HEADER = (
+    "# Имена из OpenCorpora (CC BY-SA 3.0), собрано tools/build_names.py.\n"
+    "# лемма род [родительный дательный винительный творительный предложный]\n"
+    "# Падежи указаны только там, где они не выводятся правилами из dictionary.py; - = формы нет.\n"
+)
 
 
 def name_weight(morph, word):
@@ -31,24 +39,34 @@ def main() -> None:
             if gender and len(word) >= 3 and word.isalpha():
                 lemmas[word] = gender
 
-    rows = []
+    entries = {}
     for lemma, gender in sorted(lemmas.items()):
         if name_weight(morph, lemma) < MIN_NAME_WEIGHT:
             continue
         parse = next(p for p in morph.parse(lemma) if p.normal_form == lemma)
-        for case in CASES:
+        forms = []
+        for case in CASES[1:]:
             inflected = parse.inflect({"sing", case})
-            if not inflected:
-                continue
-            form = inflected.word
-            if name_weight(morph, form) < MIN_NAME_WEIGHT:
-                continue
-            rows.append((lemma.capitalize(), gender, case, form.capitalize()))
+            form = inflected.word.capitalize() if inflected else None
+            if form and name_weight(morph, form) < MIN_NAME_WEIGHT:
+                form = None
+            forms.append(form)
+        entries[lemma.capitalize()] = (gender, tuple(forms))
 
-    with gzip.open(OUT, "wt", encoding="utf-8", compresslevel=9) as fh:
-        for row in rows:
-            fh.write("\t".join(row) + "\n")
-    print(f"lemmas={len({r[0] for r in rows})} forms={len(rows)} -> {OUT}", file=sys.stderr)
+    lines = [HEADER.rstrip("\n")]
+    for lemma, (gender, forms) in entries.items():
+        if dictionary.regular_forms(lemma, gender) == forms:
+            lines.append(f"{lemma} {gender}")
+        else:
+            lines.append(f"{lemma} {gender} " + " ".join(f or "-" for f in forms))
+    OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    dictionary.load.cache_clear()
+    for lemma, (_, forms) in entries.items():
+        table = dictionary.declension(lemma)
+        assert tuple(table.get(c) for c in CASES[1:]) == forms, lemma
+    exceptions = sum(1 for line in lines[3:] if len(line.split(" ")) > 2)
+    print(f"lemmas={len(entries)} exceptions={exceptions} -> {OUT}", file=sys.stderr)
 
 
 if __name__ == "__main__":
