@@ -8,6 +8,20 @@ _MAX_CUT = 3
 
 Entry = Tuple[str, str, str]  # (лемма, род, падеж)
 
+# Имена, совпадающие с обычными словами; распознаются только в режиме aggressive
+_AMBIGUOUS = {
+    "Вера": ("f", "Веры Вере Веру Верой Вере"),
+    "Надежда": ("f", "Надежды Надежде Надежду Надеждой Надежде"),
+    "Любовь": ("f", "Любови Любови Любовь Любовью Любови"),
+    "Роман": ("m", "Романа Роману Романа Романом Романе"),
+}
+_AMBIGUOUS_GENDERS = {lemma: gender for lemma, (gender, _) in _AMBIGUOUS.items()}
+_AMBIGUOUS_FORMS: Dict[str, Tuple[str, str]] = {}
+for _lemma, (_, _forms) in _AMBIGUOUS.items():
+    _AMBIGUOUS_FORMS.setdefault(_lemma, (_lemma, "nomn"))
+    for _case, _form in zip(CASES[1:], _forms.split()):
+        _AMBIGUOUS_FORMS.setdefault(_form, (_lemma, _case))
+
 
 class Dictionary(NamedTuple):
     genders: Dict[str, str]
@@ -70,7 +84,8 @@ def declension(lemma: str) -> Dict[str, str]:
     return table
 
 
-def lookup(token: str) -> Optional[Entry]:
+@lru_cache(maxsize=8192)
+def lookup(token: str, ambiguous: bool = False) -> Optional[Entry]:
     """Самая ранняя по алфавиту лемма, чья словоформа совпала с токеном."""
     d = load()
     if token in d.genders:
@@ -78,6 +93,8 @@ def lookup(token: str) -> Optional[Entry]:
     found = []
     if token in d.exception_forms:
         found.append(d.exception_forms[token])
+    if ambiguous and token in _AMBIGUOUS_FORMS:
+        found.append(_AMBIGUOUS_FORMS[token])
     for cut in range(1, _MAX_CUT + 1):
         stem = token[: len(token) - cut]
         if len(stem) < 2:
@@ -93,4 +110,4 @@ def lookup(token: str) -> Optional[Entry]:
     if not found:
         return None
     lemma, case = min(found, key=lambda f: (f[0], CASES.index(f[1])))
-    return lemma, d.genders[lemma], case
+    return lemma, d.genders.get(lemma) or _AMBIGUOUS_GENDERS[lemma], case
