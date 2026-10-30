@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ru-name-anonymizer"
+version = "0.1.0"
+description = "Анонимизация русских имён, отчеств и фамилий без ML и тяжёлых зависимостей"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["russian", "anonymization", "names", "nlp", "pii"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Natural Language :: Russian",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ru_name_anonymizer = ["names.tsv.gz"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-exclude = ["tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
