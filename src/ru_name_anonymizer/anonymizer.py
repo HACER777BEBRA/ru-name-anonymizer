@@ -1,7 +1,18 @@
 import random
 import re
 from functools import lru_cache
-from typing import Dict, FrozenSet, Iterable, List, NamedTuple, Optional, Set, Tuple, Union
+from typing import (
+    Callable,
+    Dict,
+    FrozenSet,
+    Iterable,
+    List,
+    NamedTuple,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
 
 from ru_name_anonymizer import english
 from ru_name_anonymizer.dictionary import Entry, declension, is_common, load, lookup
@@ -241,12 +252,181 @@ def preload(languages: Languages = ("ru",), kinds: Kinds = tuple(KINDS)) -> None
         load()
 
 
+_PUBLIC_KIND = {role: kind for kind, role in KINDS.items()}
+
+
+class NameEntity(NamedTuple):
+    """Найденное имя, отчество, фамилия или инициалы.
+
+    start, end — позиции в исходном тексте: text[start:end] == entity.text.
+    kind — "first", "patronymic", "surname" или "initials".
+    normal_form — начальная форма: «Ивану» → «Иван», «Петровой» → «Петрова»,
+    «Достоевского» → «Достоевский»; для инициалов — сам текст.
+    gender — "m", "f" или "c" (не удалось определить).
+    case — падеж: "nomn", "gent", "datv", "accs", "ablt", "loct"; для инициалов None.
+    language — "ru" или "en".
+    """
+
+    start: int
+    end: int
+    text: str
+    kind: str
+    normal_form: str
+    gender: str
+    case: Optional[str]
+    language: str
+
+
+class Replacement(NamedTuple):
+    """Что на что заменено: entity — найденное в исходном тексте, replacement — подстановка."""
+
+    entity: NameEntity
+    replacement: str
+
+
+class AnonymizeResult(NamedTuple):
+    text: str
+    replacements: List[Replacement]
+
+
+Replacer = Callable[[NameEntity], Optional[str]]
+
+
+class _Token(NamedTuple):
+    start: int
+    end: int
+    text: str
+
+
+class _Hit(NamedTuple):
+    token: _Token
+    role: str
+    data: Entry
+    gender: str  # род и падеж группы слов, к которой относится токен
+    case: str
+
+
+class Anonymizer:
+    """Анонимизатор с настройками, заданными один раз.
+
+    Параметры rng, aggressive, languages, kinds — как у anonymize_names.
+
+    consistent=True — одно и то же имя получает одну и ту же замену во всех вызовах этого
+    объекта, а не только в пределах одного текста; reset() забывает накопленные замены.
+    В этом режиме объект хранит состояние: не вызывайте один экземпляр из нескольких
+    потоков одновременно.
+
+    replace — своя функция замены. Получает NameEntity и возвращает строку, которая
+    подставляется как есть, или None, чтобы использовать стандартную случайную замену:
+
+        Anonymizer(replace=lambda e: "[ФИО]")
+    """
+
+    def __init__(
+        self,
+        *,
+        rng: Optional[random.Random] = None,
+        aggressive: bool = False,
+        languages: Languages = ("ru",),
+        kinds: Kinds = tuple(KINDS),
+        consistent: bool = False,
+        replace: Optional[Replacer] = None,
+    ) -> None:
+        self._languages = _normalize_languages(languages)
+        self._enabled = _normalize_kinds(kinds)
+        self._aggressive = bool(aggressive)
+        self._consistent = bool(consistent)
+        self._pattern = _pattern(self._languages, self._aggressive)
+        self._rng = rng
+        self._replace = replace
+        self._memo: Dict[tuple, str] = {}
+        self._used: Set[str] = set()
+
+    @property
+    def languages(self) -> Tuple[str, ...]:
+        return self._languages
+
+    @property
+    def kinds(self) -> Tuple[str, ...]:
+        return tuple(kind for kind, role in KINDS.items() if role in self._enabled)
+
+    @property
+    def aggressive(self) -> bool:
+        return self._aggressive
+
+    @property
+    def consistent(self) -> bool:
+        return self._consistent
+
+    def preload(self) -> None:
+        """Загружает словарь заранее, если он понадобится при этих настройках."""
+        if "ru" in self._languages and "first" in self._enabled:
+            load()
+
+    def reset(self) -> None:
+        """Забывает замены, накопленные в режиме consistent."""
+        self._memo.clear()
+        self._used.clear()
+
+    def find(self, text: str) -> List[NameEntity]:
+        """Находит имена, ничего не заменяя; результат упорядочен по позиции."""
+        hits, _ = _analyze(text, self._pattern, self._aggressive, self._enabled)
+        return [_entity(hit) for hit in hits]
+
+    def anonymize(self, text: str) -> str:
+        return self.anonymize_detailed(text).text
+
+    def anonymize_detailed(self, text: str) -> AnonymizeResult:
+        """Как anonymize, но вместе с текстом возвращает список сделанных замен."""
+        hits, originals = _analyze(text, self._pattern, self._aggressive, self._enabled)
+        if not hits:
+            return AnonymizeResult(text, [])
+        rng = self._rng or random
+        if self._consistent:
+            memo: Optional[Dict[tuple, str]] = self._memo
+            used = self._used
+            used.update(originals)
+        else:
+            memo, used = None, originals
+
+        parts: List[str] = []
+        done: List[Replacement] = []
+        pos = 0
+        for hit in hits:
+            entity = _entity(hit)
+            new = self._replace(entity) if self._replace is not None else None
+            if new is None:
+                new = _match_case(hit.token.text, _fake(hit, used, rng, memo))
+            elif not isinstance(new, str):
+                raise TypeError(f"replace должна вернуть str или None, получено {type(new)!r}")
+            parts.append(text[pos : hit.token.start])
+            parts.append(new)
+            pos = hit.token.end
+            done.append(Replacement(entity, new))
+        parts.append(text[pos:])
+        return AnonymizeResult("".join(parts), done)
+
+
+def find_names(
+    text: str,
+    aggressive: bool = False,
+    languages: Languages = ("ru",),
+    kinds: Kinds = tuple(KINDS),
+) -> List[NameEntity]:
+    """Находит имена, отчества, фамилии и инициалы с позициями, ничего не заменяя.
+
+    Находится ровно то, что заменила бы anonymize_names с теми же параметрами.
+    """
+    return Anonymizer(aggressive=aggressive, languages=languages, kinds=kinds).find(text)
+
+
 def anonymize_names(
     text: str,
     rng: Optional[random.Random] = None,
     aggressive: bool = False,
     languages: Languages = ("ru",),
     kinds: Kinds = tuple(KINDS),
+    replace: Optional[Replacer] = None,
 ) -> str:
     """Заменяет имена, отчества и фамилии на случайные, сохраняя род и падеж.
 
@@ -260,8 +440,12 @@ def anonymize_names(
     "surname" (фамилии по суффиксам и английскому списку), "initials". По умолчанию всё.
     Отключённые виды не ищутся: без "first" русский словарь не загружается, а фамилии
     заменяются и без имени рядом.
+
+    replace — своя функция замены: NameEntity -> строка или None (стандартная замена).
     """
-    return _anonymize(text, rng, aggressive, False, languages, kinds)
+    return Anonymizer(
+        rng=rng, aggressive=aggressive, languages=languages, kinds=kinds, replace=replace
+    ).anonymize(text)
 
 
 def anonymize_names_consistent(
@@ -270,20 +454,29 @@ def anonymize_names_consistent(
     aggressive: bool = False,
     languages: Languages = ("ru",),
     kinds: Kinds = tuple(KINDS),
+    replace: Optional[Replacer] = None,
 ) -> str:
-    """Как anonymize_names, но одно и то же имя заменяется одной и той же заменой."""
-    return _anonymize(text, rng, aggressive, True, languages, kinds)
+    """Как anonymize_names, но одно и то же имя заменяется одной и той же заменой.
+
+    Согласованность действует в пределах одного вызова; чтобы она сохранялась между
+    вызовами, используйте Anonymizer(consistent=True).
+    """
+    return Anonymizer(
+        rng=rng,
+        aggressive=aggressive,
+        languages=languages,
+        kinds=kinds,
+        consistent=True,
+        replace=replace,
+    ).anonymize(text)
 
 
-def _anonymize(
-    text: str, rng, aggressive: bool, consistent: bool, languages: Languages, kinds: Kinds
-) -> str:
-    enabled = _normalize_kinds(kinds)
-    pattern = _pattern(_normalize_languages(languages), aggressive)
+def _analyze(
+    text: str, pattern: re.Pattern, aggressive: bool, enabled: FrozenSet[str]
+) -> Tuple[List[_Hit], Set[str]]:
+    """Токены, которые нужно заменить, и множество исходных имён текста (в нижнем регистре)."""
     if not text or not pattern.search(text):
-        return text
-    rng = rng or random
-    memo: Optional[Dict[tuple, str]] = {} if consistent else None
+        return [], set()
 
     plans = []
     used: Set[str] = set()
@@ -293,7 +486,7 @@ def _anonymize(
     ]
     # «Света не было», «Нате, держите»: одиночное имя-омоним в начале фразы считаем обычным
     # словом, если в тексте оно ни разу не встретилось как имя в другом месте
-    doubtful = {} if aggressive else _doubtful_common(text, all_roles)
+    doubtful = set() if aggressive else _doubtful_common(text, all_roles)
     for roles in all_roles:
         if id(roles) in doubtful:
             continue
@@ -314,31 +507,51 @@ def _anonymize(
         plans.append((roles, *_context(anchors)))
         used.update(data[0].lower() for _, role, data in roles if role and role != "init")
 
-    parts: List[str] = []
-    pos = 0
-    for roles, gender, case in plans:
-        for tok, role, data in roles:
-            if role == "first":
-                new = _new_first(data, gender, used, rng, memo)
-            elif role == "patr":
-                new = _new_patr(data, used, rng, memo)
-            elif role == "init" and "init" in enabled:
-                new = _new_initials(tok.text, gender, rng, memo)
-            elif role == "surn":
-                new = _new_surname(data, gender, case, used, rng, memo)
-            else:
-                continue
-            parts.append(text[pos : tok.start])
-            parts.append(_match_case(tok.text, new))
-            pos = tok.end
-    parts.append(text[pos:])
-    return "".join(parts)
+    hits = [
+        _Hit(tok, role, data, gender, case)
+        for roles, gender, case in plans
+        for tok, role, data in roles
+        if role and (role != "init" or "init" in enabled)
+    ]
+    return hits, used
 
 
-class _Token(NamedTuple):
-    start: int
-    end: int
-    text: str
+def _fake(hit: _Hit, used: Set[str], rng, memo) -> str:
+    if hit.role == "first":
+        return _new_first(hit.data, hit.gender, used, rng, memo)
+    if hit.role == "patr":
+        return _new_patr(hit.data, used, rng, memo)
+    if hit.role == "surn":
+        return _new_surname(hit.data, hit.gender, hit.case, used, rng, memo)
+    return _new_initials(hit.token.text, hit.gender, rng, memo)
+
+
+def _entity(hit: _Hit) -> NameEntity:
+    tok, role, data = hit.token, hit.role, hit.data
+    case: Optional[str]
+    if role == "first":
+        gender = hit.gender if data[1] == "c" else data[1]
+        normal, case = data[0], data[2]
+    elif role == "patr":
+        gender, case = data[1], data[2]
+        normal = data[0] + ("ич" if gender == "m" else "на")
+    elif role == "surn":
+        gender, case = hit.gender, hit.case
+        normal = _surname_normal(data[0], gender)
+    else:
+        gender, case, normal = hit.gender, None, tok.text
+    language = "en" if tok.text.isascii() else "ru"
+    return NameEntity(tok.start, tok.end, tok.text, _PUBLIC_KIND[role], normal, gender, case,
+                      language)
+
+
+def _surname_normal(stem: str, gender: str) -> str:
+    female = gender == "f"
+    if stem.isascii():
+        return stem
+    if stem.lower().endswith(("ск", "цк")):
+        return stem + ("ая" if female else "ий")
+    return stem + ("а" if female else "")
 
 
 def _token_roles(m: re.Match, aggressive: bool, enabled: FrozenSet[str]):

@@ -15,8 +15,10 @@ anonymize_names("Позвони Александру Сергеевичу Пет
 
 | Функция | Что делает |
 |---|---|
-| `anonymize_names(text, rng=None, aggressive=False, languages=("ru",), kinds=все)` | Каждое вхождение имени заменяется независимо |
-| `anonymize_names_consistent(text, rng=None, aggressive=False, languages=("ru",), kinds=все)` | Одно и то же имя, отчество или фамилия всегда получает одну замену; разные — разные |
+| `anonymize_names(text, rng=None, aggressive=False, languages=("ru",), kinds=все, replace=None)` | Каждое вхождение имени заменяется независимо |
+| `anonymize_names_consistent(text, rng=None, aggressive=False, languages=("ru",), kinds=все, replace=None)` | Одно и то же имя, отчество или фамилия всегда получает одну замену; разные — разные |
+| `find_names(text, aggressive=False, languages=("ru",), kinds=все)` | Находит имена с позициями, ничего не заменяя |
+| `Anonymizer(...)` | Настройки задаются один раз; согласованные замены между вызовами — см. [Встраивание в приложение](#встраивание-в-приложение) |
 | `preload(languages=("ru",), kinds=все)` | Загружает словарь заранее |
 
 `aggressive=True` заменяет «вообще всё»: имена в нижнем регистре и КАПСЕ («дима», «ДИМА»), одиночные фамилии («сказал Иванов») и имена, совпадающие с обычными словами («Надежда», «Любовь», «Роман»). В этом режиме возможны ложные срабатывания на обычных словах и городах («Ростов»).
@@ -53,6 +55,51 @@ anonymize_names(text, kinds=("first", "initials"), languages=("ru", "en"))
 ```
 
 Отключённый источник не используется вообще: без `"first"` русский словарь не загружается (экономия ≈0,3 с и ≈5 МБ), а фамилии заменяются и без имени рядом, потому что опереться на имя нельзя. Остальные виды работают независимо друг от друга. Инициалы без фамилии рядом заменяются, только если букв две («А. С.»): одиночная «Б.» в «пункт Б.» остаётся как есть.
+
+## Встраивание в приложение
+
+**Найти, не заменяя.** `find_names` возвращает список `NameEntity` в порядке появления в тексте; находится ровно то, что заменила бы `anonymize_names` с теми же параметрами:
+
+```python
+from ru_name_anonymizer import find_names
+
+find_names("Позвони Александру Сергеевичу Петрову")
+# [NameEntity(start=8, end=18, text='Александру', kind='first', normal_form='Александр',
+#             gender='m', case='datv', language='ru'),
+#  NameEntity(..., text='Сергеевичу', kind='patronymic', normal_form='Сергеевич', ...),
+#  NameEntity(..., text='Петрову', kind='surname', normal_form='Петров', ...)]
+```
+
+| Поле | Значение |
+|---|---|
+| `start`, `end` | позиции в исходном тексте: `text[start:end] == entity.text` |
+| `kind` | `"first"`, `"patronymic"`, `"surname"`, `"initials"` |
+| `normal_form` | начальная форма: «Петровой» → «Петрова», «Достоевского» → «Достоевский»; для инициалов — сам текст |
+| `gender` | `"m"`, `"f"` или `"c"` (не определён) |
+| `case` | падеж (`"nomn"`, `"gent"`, `"datv"`, `"accs"`, `"ablt"`, `"loct"`); у инициалов `None` |
+| `language` | `"ru"` или `"en"` |
+
+**Своя замена.** `replace` получает `NameEntity` и возвращает строку (подставляется как есть, без подгонки регистра) или `None` — тогда используется стандартная случайная замена:
+
+```python
+anonymize_names(text, replace=lambda e: "[ФИО]")                                  # маска
+anonymize_names(text, replace=lambda e: "[ФАМИЛИЯ]" if e.kind == "surname" else None)
+```
+
+**Настроить один раз.** `Anonymizer` принимает те же параметры (`rng`, `aggressive`, `languages`, `kinds`, `replace`) и `consistent`. С `consistent=True` одно и то же имя получает одну замену во всех вызовах объекта — удобно, когда документ, чат или датасет обрабатывается по частям:
+
+```python
+from ru_name_anonymizer import Anonymizer
+
+anon = Anonymizer(consistent=True)
+anon.anonymize("Иван пришёл.")   # 'Леонид пришёл.'
+anon.anonymize("Ивана нет.")     # 'Леонида нет.'
+anon.reset()                     # забыть накопленные замены
+```
+
+`anonymize_detailed(text)` возвращает `AnonymizeResult(text, replacements)`, где каждая `Replacement` — пара «найденная сущность → подстановка»: по ней можно вести аудит или восстановить исходный текст. `find(text)` и `preload()` работают как одноимённые функции. В режиме `consistent` объект хранит состояние, поэтому не вызывайте один экземпляр из нескольких потоков одновременно; без `consistent` он состояния не хранит.
+
+Пакет типизирован (`py.typed`).
 
 ## Как это работает
 
