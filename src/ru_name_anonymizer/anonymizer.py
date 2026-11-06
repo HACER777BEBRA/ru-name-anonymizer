@@ -39,6 +39,9 @@ KINDS = {
 }
 # Из чего состоит aggressive: любой регистр, фамилии без имени рядом, имена-омонимы
 AGGRESSIVE = ("any_case", "lone_surnames", "ambiguous")
+# Что включает chat: любой регистр, фамилии без имени рядом и имена-омонимы, но только
+# с заглавной буквы — «Роман пишет» заменяется, «читаю роман» нет
+CHAT_FLAGS = frozenset({"any_case", "lone_surnames", "ambiguous_titled"})
 # Ключи параметра pools; с префиксом языка («be:first_m») — только для этого языка
 POOL_KEYS = tuple(POOL_ROLES)
 STATE_VERSION = 2  # 2: добавлены термины динамических локалей и их замены
@@ -154,6 +157,11 @@ def _normalize_aggressive(aggressive: Aggressive) -> FrozenSet[str]:
             f"aggressive: ожидается bool или набор из {AGGRESSIVE}, получено {flags!r}"
         )
     return frozenset(flags)
+
+
+def _flags(aggressive: Aggressive, chat: bool) -> FrozenSet[str]:
+    flags = _normalize_aggressive(aggressive)
+    return flags | CHAT_FLAGS if chat else flags
 
 
 def _normalize_exclude(exclude: Optional[Iterable[str]]) -> FrozenSet[str]:
@@ -447,7 +455,7 @@ class _Faker:
 class Anonymizer:
     """Анонимизатор с настройками, заданными один раз.
 
-    Параметры rng, aggressive, languages, kinds, exclude, pools, replace — как у
+    Параметры rng, aggressive, chat, languages, kinds, exclude, pools, replace — как у
     anonymize_names.
 
     consistent=True — одно и то же имя получает одну и ту же замену во всех вызовах этого
@@ -468,6 +476,7 @@ class Anonymizer:
         *,
         rng: Optional[random.Random] = None,
         aggressive: Aggressive = False,
+        chat: bool = False,
         languages: Languages = ("ru",),
         kinds: Kinds = tuple(KINDS),
         consistent: bool = False,
@@ -480,8 +489,10 @@ class Anonymizer:
         self._languages = _normalize_languages(languages)
         self._locales = _locales(self._languages)
         self._opts = Options(
-            _normalize_kinds(kinds), _normalize_aggressive(aggressive), _normalize_exclude(exclude)
+            _normalize_kinds(kinds), _flags(aggressive, chat), _normalize_exclude(exclude)
         )
+        self._chat = bool(chat)
+        self._aggressive = tuple(f for f in AGGRESSIVE if f in _normalize_aggressive(aggressive))
         self._static = bool(self._opts.enabled - {"nick"})
         self._pools = _PoolSet(pools, self._locales) if pools else _DEFAULT_POOL_SET
         self._consistent = bool(consistent)
@@ -511,8 +522,12 @@ class Anonymizer:
 
     @property
     def aggressive(self) -> Tuple[str, ...]:
-        """Включённые части aggressive в порядке AGGRESSIVE; пустой кортеж — режим выключен."""
-        return tuple(flag for flag in AGGRESSIVE if flag in self._opts.flags)
+        """Части aggressive в порядке AGGRESSIVE (без учёта chat); пустой кортеж — выключен."""
+        return self._aggressive
+
+    @property
+    def chat(self) -> bool:
+        return self._chat
 
     @property
     def consistent(self) -> bool:
@@ -740,6 +755,7 @@ class Anonymizer:
 def find_names(
     text: str,
     aggressive: Aggressive = False,
+    chat: bool = False,
     languages: Languages = ("ru",),
     kinds: Kinds = tuple(KINDS),
     exclude: Optional[Iterable[str]] = None,
@@ -751,7 +767,7 @@ def find_names(
     Находится ровно то, что заменила бы anonymize_names с теми же параметрами.
     """
     return Anonymizer(
-        aggressive=aggressive, languages=languages, kinds=kinds, exclude=exclude,
+        aggressive=aggressive, chat=chat, languages=languages, kinds=kinds, exclude=exclude,
         dynamic=dynamic, auto_detect=auto_detect,
     ).find(text)
 
@@ -760,6 +776,7 @@ def anonymize_names(
     text: str,
     rng: Optional[random.Random] = None,
     aggressive: Aggressive = False,
+    chat: bool = False,
     languages: Languages = ("ru",),
     kinds: Kinds = tuple(KINDS),
     replace: Optional[Replacer] = None,
@@ -773,6 +790,10 @@ def anonymize_names(
     aggressive — True включает всё сразу, или набор частей из AGGRESSIVE:
     "any_case" (имена в нижнем регистре и КАПСЕ), "lone_surnames" (фамилии без имени
     рядом), "ambiguous" (имена, совпадающие с обычными словами: «Вера», «Роман»).
+
+    chat — режим переписки, без aggressive: имена в любом регистре («дима», «ДИМА»),
+    фамилии без имени рядом и омонимы с заглавной буквы («Роман», «Надежда», «Света» и
+    в начале фразы). Омонимы строчными («читаю роман», «много света») не трогаются.
 
     languages — какие языки использовать: "ru", "en" или несколько, например ("ru", "en");
     список доступных — available_languages(). Имя заменяется именем того же языка.
@@ -792,7 +813,8 @@ def anonymize_names(
     auto_detect — искать новые термины шаблонами локалей (в "tg" — @упоминания).
     """
     return Anonymizer(
-        rng=rng, aggressive=aggressive, languages=languages, kinds=kinds, replace=replace,
+        rng=rng, aggressive=aggressive, chat=chat, languages=languages, kinds=kinds,
+        replace=replace,
         exclude=exclude, pools=pools, dynamic=dynamic, auto_detect=auto_detect,
     ).anonymize(text)
 
@@ -801,6 +823,7 @@ def anonymize_names_consistent(
     text: str,
     rng: Optional[random.Random] = None,
     aggressive: Aggressive = False,
+    chat: bool = False,
     languages: Languages = ("ru",),
     kinds: Kinds = tuple(KINDS),
     replace: Optional[Replacer] = None,
@@ -817,6 +840,7 @@ def anonymize_names_consistent(
     return Anonymizer(
         rng=rng,
         aggressive=aggressive,
+        chat=chat,
         languages=languages,
         kinds=kinds,
         consistent=True,
@@ -846,7 +870,8 @@ def _analyze(
     ]
     # «Света не было», «Нате, держите»: одиночное имя-омоним в начале фразы считаем обычным
     # словом, если в тексте оно ни разу не встретилось как имя в другом месте
-    doubtful = set() if "ambiguous" in opts.flags else _doubtful_common(text, all_roles)
+    homonyms = opts.flags & {"ambiguous", "ambiguous_titled"}
+    doubtful = set() if homonyms else _doubtful_common(text, all_roles)
     for roles in all_roles:
         if id(roles) in doubtful:
             continue

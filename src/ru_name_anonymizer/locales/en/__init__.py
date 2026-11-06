@@ -16,7 +16,9 @@ class EnglishLocale(Locale):
         is_titled = titled(token)
         word = token.capitalize() if "any_case" in opts.flags else token
         if "first" in opts.enabled:
-            entry = names.lookup(word, "ambiguous" in opts.flags, is_titled)
+            # омонимы английский словарь и так узнаёт только с заглавной буквы
+            ambiguous = bool(opts.flags & {"ambiguous", "ambiguous_titled"})
+            entry = names.lookup(word, ambiguous, is_titled)
             if entry:
                 return "first", entry
         if "surn" in opts.enabled and (is_titled or token.isupper()) and names.is_surname(word):

@@ -21,7 +21,7 @@ POOL_ROLES = {"first_m": "first", "first_f": "first", "patronymic": "patr", "sur
 
 class Options(NamedTuple):
     enabled: FrozenSet[str]  # включённые роли: отключённый источник не используется
-    flags: FrozenSet[str]  # включённые части aggressive
+    flags: FrozenSet[str]  # части aggressive и "ambiguous_titled" (из chat)
     exclude: FrozenSet[str]  # слова, которые не трогаем (casefold)
 
 
@@ -81,7 +81,7 @@ class Locale:
 
         Учитывать opts.enabled (выключенные роли не распознавать) и opts.flags:
         "any_case" — слово может быть в любом регистре, "ambiguous" — распознавать
-        имена-омонимы. Для фамилии род и падеж можно вернуть "c" и "nomn": ядро возьмёт
+        имена-омонимы, "ambiguous_titled" — омонимы, но только с заглавной буквы. Для фамилии род и падеж можно вернуть "c" и "nomn": ядро возьмёт
         их у имени или отчества рядом.
         """
         raise NotImplementedError

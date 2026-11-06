@@ -43,7 +43,9 @@ class RussianLocale(Locale):
     def classify_word(self, token: str, opts: Options) -> Classified:
         word = token.capitalize() if "any_case" in opts.flags else token
         if "first" in opts.enabled:
-            ambiguous = "ambiguous" in opts.flags
+            ambiguous = "ambiguous" in opts.flags or (
+                "ambiguous_titled" in opts.flags and titled(token)
+            )
             entry = lookup(word, ambiguous)
             # «света», «ВЕРА» не с заглавной — скорее обычные слова, если омонимы не включены
             if entry and (ambiguous or titled(token) or not is_common(entry[0])):

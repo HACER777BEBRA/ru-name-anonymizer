@@ -277,3 +277,44 @@ def test_consistent_is_thread_safe():
     for name, fake in results.values():
         assert mapping.setdefault(name, fake) == fake
     assert len(set(mapping.values())) == len(mapping)
+
+
+# --- chat ----------------------------------------------------------------------------------
+
+
+def test_chat_covers_lowercase_homonyms_and_lone_surnames():
+    text = "дима, ты где? ДИМА! Света, Роман и Надежда ждут, Иванов тоже"
+    result = anonymize_names(text, rng(), chat=True)
+    for original in ["дима", "ДИМА", "Света", "Роман", "Надежда", "Иванов"]:
+        assert original not in result
+    assert anonymize_names(text, rng()) != result
+
+
+def test_chat_keeps_lowercase_homonyms():
+    text = "читаю роман, много света, надежда есть, вера в людей"
+    assert anonymize_names(text, rng(), chat=True) == text
+    assert anonymize_names(text, rng(), aggressive=True) != text
+
+
+def test_chat_does_not_enable_aggressive():
+    anon = Anonymizer(chat=True)
+    assert anon.chat and anon.aggressive == ()
+    assert not Anonymizer().chat
+
+
+def test_chat_combines_with_aggressive_and_exclude():
+    text = "читаю роман, Роман Ростов"
+    assert "роман," not in anonymize_names(text, rng(), chat=True, aggressive="ambiguous")
+    assert anonymize_names(text, rng(), chat=True, exclude=["Ростов"]).endswith("Ростов")
+
+
+def test_chat_find_names_matches_anonymize():
+    text = "дима и Роман"
+    assert [e.text for e in find_names(text, chat=True)] == ["дима", "Роман"]
+    assert find_names(text) == []
+
+
+def test_chat_english():
+    assert anonymize_names("will you go, Will", rng(), chat=True, languages="en").startswith(
+        "will you go, "
+    )
