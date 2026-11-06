@@ -15,11 +15,16 @@ _COMMON = {
     "Света": ("f", "Светы Свете Свету Светой Свете"),
     "Вера": ("f", "Веры Вере Веру Верой Вере"),
     "Ната": ("f", "Наты Нате Нату Натой Нате"),
+    "Варвара": ("f", "Варвары Варваре Варвару Варварой Варваре"),  # «варвара» — от «варвар»
+    "Ада": ("f", "Ады Аде Аду Адой Аде"),  # «из ада»
+    "Майя": ("f", "Майи Майе Майю Майей Майе"),  # «цивилизация майя»
+    "Мишка": ("m", "Мишки Мишке Мишку Мишкой Мишке"),  # «плюшевый мишка»
 }
 _AMBIGUOUS = {
     "Надежда": ("f", "Надежды Надежде Надежду Надеждой Надежде"),
     "Любовь": ("f", "Любови Любови Любовь Любовью Любови"),
     "Роман": ("m", "Романа Роману Романа Романом Романе"),
+    "Слава": ("m", "Славы Славе Славу Славой Славе"),  # «Аллея Славы», «Слава богу»
 }
 _AMBIGUOUS_GENDERS = {
     lemma: gender for lemma, (gender, _) in {**_COMMON, **_AMBIGUOUS}.items()
@@ -74,7 +79,8 @@ def load() -> Dictionary:
     genders: Dict[str, str] = {}
     exceptions: Dict[str, Tuple[Optional[str], ...]] = {}
     exception_forms: Dict[str, Tuple[str, str]] = {}
-    text = resources.files(__package__).joinpath("names.txt").read_text("utf-8")
+    files = resources.files(__package__)
+    text = "\n".join(files.joinpath(n).read_text("utf-8") for n in ("names.txt", "names_extra.txt"))
     for line in text.splitlines():
         if not line or line.startswith("#"):
             continue
@@ -87,6 +93,11 @@ def load() -> Dictionary:
                 if form:
                     exception_forms.setdefault(form, (lemma, case))
     return Dictionary(genders, exceptions, exception_forms)
+
+
+def _indeclinable(lemma: str) -> bool:
+    forms = load().exceptions.get(lemma)
+    return forms is not None and all(f == lemma for f in forms)
 
 
 def is_common(lemma: str) -> bool:
@@ -116,8 +127,13 @@ def declension(lemma: str, gender: Optional[str] = None) -> Dict[str, str]:
 def lookup(token: str, ambiguous: bool = False) -> Optional[Entry]:
     """Самая ранняя по алфавиту лемма, чья словоформа совпала с токеном."""
     d = load()
+    fallback: Optional[Entry] = None
     if token in d.genders:
-        return token, d.genders[token], "nomn"
+        if not _indeclinable(token):
+            return token, d.genders[token], "nomn"
+        # «Анне», «Алине», «Карине» — несклоняемые иностранные имена, но почти всегда это
+        # дательный или предложный падеж «Анны», «Алины», «Карины»
+        fallback = token, d.genders[token], "nomn"
     found = []
     if token in d.exception_forms:
         found.append(d.exception_forms[token])
@@ -137,6 +153,13 @@ def lookup(token: str, ambiguous: bool = False) -> Optional[Entry]:
             forms = regular_forms(lemma, gender)
             if forms and token in forms:
                 found.append((lemma, CASES[1 + forms.index(token)]))
+    if fallback:
+        found = [f for f in found if f[0] != token]
+        if not found:
+            return fallback
+        # «Алине»: «Алина», а не редкое мужское «Алин» в предложном падеже
+        female = [f for f in found if f[0] in (token[:-1] + "а", token[:-1] + "я")]
+        found = female or found
     if not found:
         return None
     lemma, case = min(found, key=lambda f: (f[0], CASES.index(f[1])))

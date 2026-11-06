@@ -54,6 +54,15 @@ Dynamic = Mapping[str, TermSpec]
 AutoDetect = Union[bool, str, Iterable[str]]
 
 _RUN_GAP = re.compile(r"^[  ]+$")
+# «в Иванове», «из Петрова», «улица Ленина»: одиночное слово после них — скорее топоним
+_PLACE_PREP = re.compile(r"(?:^|[^\w-])(во?|из)[  ]+$", re.IGNORECASE)
+_STREET = re.compile(
+    r"(?:^|[^\w-])(?:улиц[аеуыи]|улицей|ул\.|проспект[аеу]?|пр-т|переул(?:ок|ка|ке)|пер\.|"
+    r"площад[ьи]|пл\.|алле[яиюей]|орден[аеу]?|бульвар[аеу]?|б-р|шоссе|набережн(?:ая|ой|ую)|наб\.|проезд[аеу]?|"
+    r"станци[яиюей]|ст\.|метро|город[аеу]?|г\.|пос[её]л(?:ок|ка|ке)|пос\.|деревн[яеиюй]|"
+    r"село|сел[ае])[  ]*$",
+    re.IGNORECASE,
+)
 
 
 def __getattr__(name: str) -> Any:
@@ -873,7 +882,7 @@ def _analyze(
     homonyms = opts.flags & {"ambiguous", "ambiguous_titled"}
     doubtful = set() if homonyms else _doubtful_common(text, all_roles)
     for roles in all_roles:
-        if id(roles) in doubtful:
+        if id(roles) in doubtful or _looks_like_place(text, roles):
             continue
         anchors = [r for r in roles if r[1] in ("first", "patr")]
         if not anchors:
@@ -963,6 +972,27 @@ def _doubtful_common(text: str, all_roles) -> Set[int]:
             else:
                 confirmed.add(data[0])
     return {key for key, lemma in doubtful.items() if lemma not in confirmed}
+
+
+def _looks_like_place(text: str, roles) -> bool:
+    """Одиночное имя или фамилия после «в»/«из» или «улица»: «в Милане», «улица Ленина».
+
+    Имя после предлога считается топонимом только в подходящем падеже: «влюбилась в Машу»
+    остаётся именем.
+    """
+    known = [r for r in roles if r[1]]
+    if len(known) != 1 or known[0][1] not in ("first", "surn"):
+        return False
+    tok, role, data = known[0]
+    before = text[max(0, tok.start - 40) : tok.start]
+    if _STREET.search(before):
+        return True
+    m = _PLACE_PREP.search(before)
+    if not m:
+        return False
+    if role == "surn":
+        return True
+    return data[2] in (("gent",) if m.group(1).lower() == "из" else ("datv", "loct"))
 
 
 def _at_sentence_start(text: str, start: int) -> bool:
