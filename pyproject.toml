@@ -7,7 +7,7 @@ name = "ru-name-anonymizer"
 version = "1.0.0"
 description = "Анонимизация русских имён, отчеств и фамилий без ML и тяжёлых зависимостей"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT AND CC-BY-SA-3.0"
 license-files = ["LICENSE", "DATA-LICENSE.md"]
 keywords = ["russian", "anonymization", "names", "nlp", "pii"]
@@ -34,7 +34,7 @@ ru_name_anonymizer = ["py.typed"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 extend-exclude = ["tools"]
 
 [tool.pytest.ini_options]
