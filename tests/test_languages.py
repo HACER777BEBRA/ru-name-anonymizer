@@ -115,6 +115,6 @@ def test_kinds_combination_and_english():
 
 def test_invalid_kinds():
     with pytest.raises(ValueError):
-        anonymize_names("x", kinds="nickname")
+        anonymize_names("x", kinds="phone")
     with pytest.raises(ValueError):
         anonymize_names("x", kinds=[])

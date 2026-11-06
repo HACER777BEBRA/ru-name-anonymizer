@@ -134,7 +134,7 @@ def test_inflect_passthrough_and_validation():
     with pytest.raises(ValueError):
         inflect("Павел", "dative")
     with pytest.raises(ValueError):
-        inflect("Павел", "datv", kind="nickname")
+        inflect("Павел", "datv", kind="phone")
     with pytest.raises(ValueError):
         inflect("Павел", "datv", gender="x")
 
@@ -249,8 +249,10 @@ def test_export_and_load_state_through_json():
 
 
 def test_load_state_validation():
-    with pytest.raises(ValueError):
-        Anonymizer().load_state(Anonymizer(consistent=True).export_state())
+    source = Anonymizer(consistent=True)
+    source.anonymize("Иван пришёл")
+    with pytest.raises(ValueError):  # замены имён без consistent не имеют смысла
+        Anonymizer().load_state(source.export_state())
     anon = Anonymizer(consistent=True)
     for bad in ({}, {"version": 99}, {"version": 1, "mapping": 5, "used": []},
                 {"version": 1, "mapping": [[["first", "Иван", "m"], 1]], "used": []}):

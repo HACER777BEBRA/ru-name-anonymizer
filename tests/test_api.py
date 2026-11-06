@@ -138,4 +138,4 @@ def test_anonymizer_settings_are_validated_and_exposed():
     with pytest.raises(ValueError):
         Anonymizer(languages="de")
     with pytest.raises(ValueError):
-        Anonymizer(kinds="nickname")
+        Anonymizer(kinds="phone")

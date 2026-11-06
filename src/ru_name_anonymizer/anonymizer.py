@@ -1,5 +1,7 @@
-"""Ядро: поиск слов, группировка, подбор замен. Всё языковое — в locales/<код>/."""
+"""Ядро: поиск слов, группировка, подбор замен. Всё языковое — в locales/<код>/,
+динамические термины (ники, username) — в dynamic/."""
 
+import bisect
 import random
 import re
 import threading
@@ -21,21 +23,32 @@ from typing import (
     Union,
 )
 
+from ru_name_anonymizer.dynamic import DynamicLocale, available_dynamic, get_dynamic_locale
+from ru_name_anonymizer.dynamic.store import Group, TermSpec, TermStore
 from ru_name_anonymizer.locales import available_languages, get_locale
 from ru_name_anonymizer.locales.base import CASES, POOL_ROLES, Entry, Locale, Options
 
-# Что можно заменять: имена (словарь), отчества и фамилии (суффиксы, списки), инициалы
-KINDS = {"first": "first", "patronymic": "patr", "surname": "surn", "initials": "init"}
+# Что можно заменять: имена (словарь), отчества и фамилии (суффиксы, списки), инициалы,
+# ники и другие термины динамических локалей
+KINDS = {
+    "first": "first",
+    "patronymic": "patr",
+    "surname": "surn",
+    "initials": "init",
+    "nickname": "nick",
+}
 # Из чего состоит aggressive: любой регистр, фамилии без имени рядом, имена-омонимы
 AGGRESSIVE = ("any_case", "lone_surnames", "ambiguous")
 # Ключи параметра pools; с префиксом языка («be:first_m») — только для этого языка
 POOL_KEYS = tuple(POOL_ROLES)
-STATE_VERSION = 1
+STATE_VERSION = 2  # 2: добавлены термины динамических локалей и их замены
 
 Languages = Union[str, Iterable[str]]
 Kinds = Union[str, Iterable[str]]
 Aggressive = Union[bool, str, Iterable[str]]
 Pools = Mapping[str, Union[str, Iterable[str]]]
+Dynamic = Mapping[str, TermSpec]
+AutoDetect = Union[bool, str, Iterable[str]]
 
 _RUN_GAP = re.compile(r"^[  ]+$")
 
@@ -153,6 +166,26 @@ def _normalize_exclude(exclude: Optional[Iterable[str]]) -> FrozenSet[str]:
     return frozenset(w.casefold() for w in words)
 
 
+def _normalize_auto_detect(auto_detect: AutoDetect) -> Tuple[DynamicLocale, ...]:
+    """True — все динамические локали с шаблоном detect, иначе перечисленные коды."""
+    if auto_detect is False or auto_detect is None:
+        return ()
+    if auto_detect is True:
+        locales = tuple(get_dynamic_locale(code) for code in available_dynamic())
+        return tuple(loc for loc in locales if loc.detect)
+    locales = tuple(get_dynamic_locale(code) for code in dict.fromkeys(_as_tuple(auto_detect)))
+    without = [loc.code for loc in locales if not loc.detect]
+    if without:
+        raise ValueError(f"auto_detect: у локалей {without} нет шаблона автопоиска (detect)")
+    return locales
+
+
+def _overlaps(starts: List[int], ends: List[int], start: int, end: int) -> bool:
+    """Пересекается ли [start, end) с одним из непересекающихся упорядоченных отрезков."""
+    i = bisect.bisect_right(ends, start)  # первый отрезок, который кончается после start
+    return i < len(starts) and starts[i] < end
+
+
 @lru_cache(maxsize=None)
 def _pattern(locales: Tuple[Locale, ...], any_case: bool) -> re.Pattern:
     """Инициалы или слово в объединённом алфавите; чей это токен, решает _classify."""
@@ -177,15 +210,16 @@ _PUBLIC_KIND = {role: kind for kind, role in KINDS.items()}
 
 
 class NameEntity(NamedTuple):
-    """Найденное имя, отчество, фамилия или инициалы.
+    """Найденное имя, отчество, фамилия, инициалы или ник.
 
     start, end — позиции в исходном тексте: text[start:end] == entity.text.
-    kind — "first", "patronymic", "surname" или "initials".
+    kind — "first", "patronymic", "surname", "initials" или "nickname".
     normal_form — начальная форма: «Ивану» → «Иван», «Петровой» → «Петрова»,
-    «Достоевского» → «Достоевский»; для инициалов — сам текст.
-    gender — "m", "f" или "c" (не удалось определить).
-    case — падеж: "nomn", "gent", "datv", "accs", "ablt", "loct"; для инициалов None.
-    language — код языка, например "ru" или "en".
+    «Достоевского» → «Достоевский»; для инициалов — сам текст; для ника — основной термин
+    группы, даже если найден алиас («Zik» → «Zik_2005»).
+    gender — "m", "f" или "c" (не удалось определить; у ников всегда "c").
+    case — падеж: "nomn", "gent", "datv", "accs", "ablt", "loct"; для инициалов и ников None.
+    language — код языка, например "ru" или "en"; для ника — код динамической локали ("tg").
     """
 
     start: int
@@ -228,6 +262,14 @@ class _Hit(NamedTuple):
     case: str
 
 
+class _Item(NamedTuple):
+    """Что заменить: находка статической локали (hit) или термин динамической (group)."""
+
+    entity: NameEntity
+    hit: Optional[_Hit]
+    group: Optional[Group]
+
+
 def inflect(
     name: str,
     case: Optional[str],
@@ -241,7 +283,8 @@ def inflect(
     kind — "first", "patronymic", "surname" или "initials"; gender — "m", "f" или None
     (род берётся из словаря или из самой формы). language — код языка (entity.language);
     по умолчанию — первый язык, алфавитом которого записано слово. Несклоняемые языки,
-    инициалы, case=None и формы, которые склонять не умеем («Шевченко»), возвращаются как есть.
+    инициалы, ники, case=None и формы, которые склонять не умеем («Шевченко»), возвращаются
+    как есть.
     """
     if kind not in KINDS:
         raise ValueError(f"kind: ожидается одно из {tuple(KINDS)}, получено {kind!r}")
@@ -249,6 +292,8 @@ def inflect(
         raise ValueError(f"case: ожидается одно из {CASES} или None, получено {case!r}")
     if gender not in (None, "m", "f", "c"):
         raise ValueError(f"gender: ожидается 'm', 'f', 'c' или None, получено {gender!r}")
+    if kind == "nickname":
+        return name
     loc = _locales(_normalize_languages(language))[0] if language is not None else None
     if case is None or kind == "initials" or not name:
         return name
@@ -408,6 +453,13 @@ class Anonymizer:
     consistent=True — одно и то же имя получает одну и ту же замену во всех вызовах этого
     объекта, а не только в пределах одного текста; reset() забывает накопленные замены,
     export_state() / load_state() сохраняют и восстанавливают их (например, в JSON).
+
+    dynamic — термины динамических локалей (ники, username), известные заранее:
+    {"tg": ["HACER777BEBRA"], "nick": {"Бебрыч": "кабачок2008"}}; дополнять во время работы —
+    add_terms(). Термин всегда получает одну и ту же замену, даже без consistent.
+    auto_detect — True или коды локалей: перед заменой искать новые термины шаблоном detect
+    локали (в "tg" — @упоминания) и добавлять их в словарь.
+
     Вызовы одного экземпляра из разных потоков безопасны.
     """
 
@@ -422,12 +474,15 @@ class Anonymizer:
         replace: Optional[Replacer] = None,
         exclude: Optional[Iterable[str]] = None,
         pools: Optional[Pools] = None,
+        dynamic: Optional[Dynamic] = None,
+        auto_detect: AutoDetect = False,
     ) -> None:
         self._languages = _normalize_languages(languages)
         self._locales = _locales(self._languages)
         self._opts = Options(
             _normalize_kinds(kinds), _normalize_aggressive(aggressive), _normalize_exclude(exclude)
         )
+        self._static = bool(self._opts.enabled - {"nick"})
         self._pools = _PoolSet(pools, self._locales) if pools else _DEFAULT_POOL_SET
         self._consistent = bool(consistent)
         self._pattern = _pattern(self._locales, "any_case" in self._opts.flags)
@@ -435,7 +490,16 @@ class Anonymizer:
         self._replace = replace
         self._memo: Dict[tuple, str] = {}
         self._used: Set[str] = set()
+        self._terms = TermStore()
+        self._auto = _normalize_auto_detect(auto_detect)
+        self._nick_memo: Dict[Tuple[str, str], str] = {}
+        self._nick_used: Set[str] = set()
         self._lock = threading.RLock()
+        if dynamic is not None:
+            if not isinstance(dynamic, abc.Mapping):
+                raise TypeError("dynamic: ожидается словарь {код локали: термины}")
+            for code, terms in dynamic.items():
+                self._terms.add(get_dynamic_locale(code), terms)
 
     @property
     def languages(self) -> Tuple[str, ...]:
@@ -454,80 +518,220 @@ class Anonymizer:
     def consistent(self) -> bool:
         return self._consistent
 
+    @property
+    def auto_detect(self) -> Tuple[str, ...]:
+        """Коды динамических локалей с включённым автопоиском."""
+        return tuple(loc.code for loc in self._auto)
+
     def preload(self) -> None:
         """Загружает словари заранее, если они понадобятся при этих настройках."""
         for loc in self._locales:
             loc.preload(self._opts.enabled)
 
+    # --- Динамические термины ------------------------------------------------------------
+
+    def add_terms(
+        self,
+        locale: str,
+        terms: TermSpec,
+        *,
+        aliases: Union[str, Iterable[str]] = (),
+        replacement: Optional[str] = None,
+    ) -> None:
+        """Добавляет термины динамической локали: ники, username, подписи.
+
+        terms — строка, список строк или словарь {термин: замена | None |
+        {"aliases": [...], "replacement": ...}}. aliases — другие написания того же человека
+        («Zik» для «Zik_2005»): вся группа получает одну замену. replacement — своя замена
+        вместо ника из пула. Повторное добавление термина не ошибка: новые алиасы
+        дописываются. Строка, уже принадлежащая другому термину, — ValueError.
+        """
+        loc = get_dynamic_locale(locale)
+        with self._lock:
+            self._terms.add(loc, terms, aliases, replacement)
+
+    def remove_terms(self, locale: str, terms: Union[str, Iterable[str]]) -> None:
+        """Удаляет термины (вместе с алиасами) или отдельные алиасы; незнакомые пропускает."""
+        loc = get_dynamic_locale(locale)
+        with self._lock:
+            self._terms.remove(loc, terms)
+
+    def terms(self) -> Dict[str, Dict[str, List[str]]]:
+        """Текущий словарь: {код локали: {термин: [алиасы]}}."""
+        with self._lock:
+            return self._terms.view()
+
+    # --- Состояние -----------------------------------------------------------------------
+
     def reset(self) -> None:
-        """Забывает замены, накопленные в режиме consistent."""
+        """Забывает накопленные замены (в том числе замены ников); словарь терминов остаётся."""
         with self._lock:
             self._memo.clear()
             self._used.clear()
+            self._nick_memo.clear()
+            self._nick_used.clear()
 
     def export_state(self) -> Dict[str, Any]:
-        """Накопленные в режиме consistent замены в виде, пригодном для json.dumps."""
+        """Накопленные замены и словарь терминов в виде, пригодном для json.dumps."""
         with self._lock:
             return {
                 "version": STATE_VERSION,
                 "mapping": [[list(key), value] for key, value in self._memo.items()],
                 "used": sorted(self._used),
+                "terms": self._terms.export(),
+                "nicknames": [[code, key, value] for (code, key), value in self._nick_memo.items()],
+                "nickname_used": sorted(self._nick_used),
             }
 
     def load_state(self, state: Mapping[str, Any]) -> None:
-        """Заменяет накопленные замены сохранёнными через export_state()."""
-        if not self._consistent:
-            raise ValueError("load_state имеет смысл только для Anonymizer(consistent=True)")
-        if not isinstance(state, abc.Mapping) or state.get("version") != STATE_VERSION:
+        """Заменяет накопленные замены и словарь терминов сохранёнными через export_state().
+
+        Состояния версии 1 (без терминов) тоже принимаются. Замены обычных имён имеют смысл
+        только для consistent=True; без него такое состояние — ValueError.
+        """
+        if not isinstance(state, abc.Mapping) or state.get("version") not in (1, STATE_VERSION):
             raise ValueError(
                 f"load_state: ожидается результат export_state() версии {STATE_VERSION}"
             )
         try:
             memo = {tuple(key): value for key, value in state["mapping"]}
             used = set(state["used"])
+            nick_memo = {(code, key): value for code, key, value in state.get("nicknames", [])}
+            nick_used = set(state.get("nickname_used", []))
+            terms = TermStore()
+            for entry in state.get("terms", []):
+                terms.add(
+                    get_dynamic_locale(entry["locale"]),
+                    entry["term"],
+                    entry.get("aliases", ()),
+                    entry.get("replacement"),
+                )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"load_state: повреждённое состояние ({error})") from None
-        if not all(isinstance(v, str) for v in memo.values()) or not all(
-            isinstance(u, str) for u in used
-        ):
+        values = [*memo.values(), *used, *nick_memo.values(), *nick_used]
+        if not all(isinstance(v, str) for v in values):
             raise ValueError("load_state: значения замен должны быть строками")
+        if memo and not self._consistent:
+            raise ValueError(
+                "load_state: замены имён имеют смысл только для Anonymizer(consistent=True)"
+            )
         with self._lock:
             self._memo, self._used = memo, used
+            self._nick_memo, self._nick_used = nick_memo, nick_used
+            self._terms = terms
+
+    # --- Поиск и замена ------------------------------------------------------------------
+
+    def _dynamic_on(self) -> bool:
+        return "nick" in self._opts.enabled and (bool(self._terms) or bool(self._auto))
 
     def find(self, text: str) -> List[NameEntity]:
-        """Находит имена, ничего не заменяя; результат упорядочен по позиции."""
-        hits, _ = _analyze(text, self._pattern, self._opts, self._locales)
-        return [_entity(hit) for hit in hits]
+        """Находит имена и термины, ничего не заменяя; результат упорядочен по позиции.
+
+        Автопоиск здесь не меняет словарь: найденное учитывается только в этом вызове.
+        """
+        if not self._dynamic_on():
+            items, _ = self._collect(text, None)
+        else:
+            with self._lock:
+                store = self._terms
+                if self._auto:
+                    store = store.copy()
+                    store.detect(text, self._auto)
+                items, _ = self._collect(text, store)
+        return [item.entity for item in items]
 
     def anonymize(self, text: str) -> str:
         return self.anonymize_detailed(text).text
 
     def anonymize_detailed(self, text: str) -> AnonymizeResult:
         """Как anonymize, но вместе с текстом возвращает список сделанных замен."""
-        hits, originals = _analyze(text, self._pattern, self._opts, self._locales)
-        if not hits:
-            return AnonymizeResult(text, [])
         rng = self._rng or random
-        if not self._consistent:
-            return self._substitute(text, hits, _Faker(self._pools, originals, rng, None))
+        dynamic = self._dynamic_on()
+        if not dynamic and not self._consistent:
+            items, originals = self._collect(text, None)
+            if not items:
+                return AnonymizeResult(text, [])
+            return self._substitute(text, items, _Faker(self._pools, originals, rng, None))
         with self._lock:
-            self._used.update(originals)
-            return self._substitute(text, hits, _Faker(self._pools, self._used, rng, self._memo))
+            if dynamic and self._auto:
+                self._terms.detect(text, self._auto)
+            items, originals = self._collect(text, self._terms if dynamic else None)
+            if not items:
+                return AnonymizeResult(text, [])
+            if self._consistent:
+                self._used.update(originals)
+                faker = _Faker(self._pools, self._used, rng, self._memo)
+            else:
+                faker = _Faker(self._pools, originals, rng, None)
+            return self._substitute(text, items, faker)
 
-    def _substitute(self, text: str, hits: List[_Hit], faker: _Faker) -> AnonymizeResult:
+    def _collect(self, text: str, store: Optional[TermStore]) -> Tuple[List[_Item], Set[str]]:
+        """Что заменить: сначала термины словаря, затем статические находки вне их."""
+        items: List[_Item] = []
+        starts: List[int] = []
+        ends: List[int] = []
+        if store:
+            exclude = self._opts.exclude
+            for start, end, group in store.find(text, "any_case" in self._opts.flags):
+                matched = text[start:end]
+                if exclude and (
+                    matched.casefold() in exclude or group.term.casefold() in exclude
+                ):
+                    continue
+                starts.append(start)
+                ends.append(end)
+                entity = NameEntity(
+                    start, end, matched, "nickname", group.term, "c", None, group.locale.code
+                )
+                items.append(_Item(entity, None, group))
+        originals: Set[str] = set()
+        if self._static:
+            hits, originals = _analyze(text, self._pattern, self._opts, self._locales)
+            static = [
+                _Item(_entity(hit), hit, None)
+                for hit in hits
+                if not starts or not _overlaps(starts, ends, hit.token.start, hit.token.end)
+            ]
+            if items:
+                items = sorted(items + static, key=lambda item: item.entity.start)
+            else:
+                items = static
+        return items, originals
+
+    def _nickname(self, group: Group, rng) -> str:
+        if group.replacement is not None:
+            return group.replacement
+        key = group.key
+        value = self._nick_memo.get(key)
+        if value is None:
+            value = group.locale.fake(group.term, rng, self._nick_used)
+            if not isinstance(value, str) or not value:
+                raise TypeError(
+                    f"{type(group.locale).__name__}.fake должна вернуть непустую строку, "
+                    f"получено {value!r}"
+                )
+            self._nick_memo[key] = value
+            self._nick_used.add(value.lower())
+        return value
+
+    def _substitute(self, text: str, items: List[_Item], faker: _Faker) -> AnonymizeResult:
         parts: List[str] = []
         done: List[Replacement] = []
         pos = 0
-        for hit in hits:
-            entity = _entity(hit)
+        for item in items:
+            entity = item.entity
             new = self._replace(entity) if self._replace is not None else None
             if new is None:
-                new = _match_case(hit.token.text, faker.fake(hit))
+                if item.hit is not None:
+                    new = _match_case(item.hit.token.text, faker.fake(item.hit))
+                else:
+                    new = self._nickname(item.group, faker.rng)
             elif not isinstance(new, str):
                 raise TypeError(f"replace должна вернуть str или None, получено {type(new)!r}")
-            parts.append(text[pos : hit.token.start])
+            parts.append(text[pos : entity.start])
             parts.append(new)
-            pos = hit.token.end
+            pos = entity.end
             done.append(Replacement(entity, new))
         parts.append(text[pos:])
         return AnonymizeResult("".join(parts), done)
@@ -539,13 +743,16 @@ def find_names(
     languages: Languages = ("ru",),
     kinds: Kinds = tuple(KINDS),
     exclude: Optional[Iterable[str]] = None,
+    dynamic: Optional[Dynamic] = None,
+    auto_detect: AutoDetect = False,
 ) -> List[NameEntity]:
-    """Находит имена, отчества, фамилии и инициалы с позициями, ничего не заменяя.
+    """Находит имена, отчества, фамилии, инициалы и термины dynamic, ничего не заменяя.
 
     Находится ровно то, что заменила бы anonymize_names с теми же параметрами.
     """
     return Anonymizer(
-        aggressive=aggressive, languages=languages, kinds=kinds, exclude=exclude
+        aggressive=aggressive, languages=languages, kinds=kinds, exclude=exclude,
+        dynamic=dynamic, auto_detect=auto_detect,
     ).find(text)
 
 
@@ -558,6 +765,8 @@ def anonymize_names(
     replace: Optional[Replacer] = None,
     exclude: Optional[Iterable[str]] = None,
     pools: Optional[Pools] = None,
+    dynamic: Optional[Dynamic] = None,
+    auto_detect: AutoDetect = False,
 ) -> str:
     """Заменяет имена, отчества и фамилии на случайные, сохраняя род и падеж.
 
@@ -569,9 +778,9 @@ def anonymize_names(
     список доступных — available_languages(). Имя заменяется именем того же языка.
 
     kinds — что заменять: "first" (имена по словарю), "patronymic" (отчества по суффиксам),
-    "surname" (фамилии по суффиксам и спискам), "initials". По умолчанию всё.
-    Отключённые виды не ищутся: без "first" словарь имён не загружается, а фамилии
-    заменяются и без имени рядом.
+    "surname" (фамилии по суффиксам и спискам), "initials", "nickname" (термины dynamic).
+    По умолчанию всё. Отключённые виды не ищутся: без "first" словарь имён не загружается,
+    а фамилии заменяются и без имени рядом.
 
     replace — своя функция замены: NameEntity -> строка или None (стандартная замена).
     exclude — слова, которые не трогать («Ростов»); сравниваются без учёта регистра
@@ -579,10 +788,12 @@ def anonymize_names(
     pools — свои списки замен: {"first_m": [...], "first_f": [...], "patronymic": [...],
     "surname": [...]}; имена в именительном падеже, склоняются автоматически. Язык значения
     определяется по алфавиту; ключ вида "ru:first_m" задаёт его явно.
+    dynamic — термины динамических локалей: {"tg": ["HACER777BEBRA"]}; см. Anonymizer.
+    auto_detect — искать новые термины шаблонами локалей (в "tg" — @упоминания).
     """
     return Anonymizer(
         rng=rng, aggressive=aggressive, languages=languages, kinds=kinds, replace=replace,
-        exclude=exclude, pools=pools,
+        exclude=exclude, pools=pools, dynamic=dynamic, auto_detect=auto_detect,
     ).anonymize(text)
 
 
@@ -595,6 +806,8 @@ def anonymize_names_consistent(
     replace: Optional[Replacer] = None,
     exclude: Optional[Iterable[str]] = None,
     pools: Optional[Pools] = None,
+    dynamic: Optional[Dynamic] = None,
+    auto_detect: AutoDetect = False,
 ) -> str:
     """Как anonymize_names, но одно и то же имя заменяется одной и той же заменой.
 
@@ -610,6 +823,8 @@ def anonymize_names_consistent(
         replace=replace,
         exclude=exclude,
         pools=pools,
+        dynamic=dynamic,
+        auto_detect=auto_detect,
     ).anonymize(text)
 
 

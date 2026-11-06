@@ -1,4 +1,4 @@
-"""Анонимизация имён, отчеств и фамилий в тексте; языки подключаются как локали."""
+"""Анонимизация имён, отчеств, фамилий и ников в тексте; языки и ники подключаются как локали."""
 
 from ru_name_anonymizer.anonymizer import (
     Anonymizer,
@@ -12,10 +12,18 @@ from ru_name_anonymizer.anonymizer import (
     inflect,
     preload,
 )
+from ru_name_anonymizer.dynamic import (
+    DynamicLocale,
+    available_dynamic,
+    register_dynamic_locale,
+)
 from ru_name_anonymizer.locales import Locale, available_languages, register_locale
 
 __all__ = [
     "Anonymizer",
+    "DynamicLocale",
+    "available_dynamic",
+    "register_dynamic_locale",
     "AnonymizeResult",
     "NameEntity",
     "Replacement",
@@ -29,4 +37,4 @@ __all__ = [
     "preload",
     "register_locale",
 ]
-__version__ = "0.7.0"
+__version__ = "0.8.0"
