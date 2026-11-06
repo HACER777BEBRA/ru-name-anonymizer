@@ -1,4 +1,4 @@
-"""Собирает src/ru_name_anonymizer/names.txt из словаря pymorphy2 (OpenCorpora).
+"""Собирает src/ru_name_anonymizer/locales/ru/names.txt из словаря pymorphy2 (OpenCorpora).
 
 Запуск: python tools/build_names.py  (нужен pymorphy2==0.9.1, pymorphy2-dicts-ru, setuptools<81)
 """
@@ -14,15 +14,15 @@ import pymorphy2  # noqa: E402
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
-from ru_name_anonymizer import dictionary  # noqa: E402
+from ru_name_anonymizer.locales.ru import dictionary  # noqa: E402
 
 MIN_NAME_WEIGHT = 0.5
 CASES = ("nomn", "gent", "datv", "accs", "ablt", "loct")
-OUT = SRC / "ru_name_anonymizer" / "names.txt"
+OUT = SRC / "ru_name_anonymizer" / "locales" / "ru" / "names.txt"
 HEADER = (
     "# Имена из OpenCorpora (CC BY-SA 3.0), собрано tools/build_names.py.\n"
     "# лемма род [родительный дательный винительный творительный предложный]\n"
-    "# Падежи указаны только там, где они не выводятся правилами из dictionary.py; - = формы нет.\n"
+    "# Падежи указаны только там, где они не выводятся правилами из locales/ru/dictionary.py; - = формы нет.\n"
 )
 
 

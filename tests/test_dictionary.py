@@ -1,7 +1,7 @@
 import pytest
 
 from ru_name_anonymizer import preload
-from ru_name_anonymizer.dictionary import declension, load, lookup
+from ru_name_anonymizer.locales.ru.dictionary import declension, load, lookup
 
 
 @pytest.mark.parametrize(

@@ -1,4 +1,4 @@
-"""Анонимизация русских имён, отчеств и фамилий в тексте."""
+"""Анонимизация имён, отчеств и фамилий в тексте; языки подключаются как локали."""
 
 from ru_name_anonymizer.anonymizer import (
     Anonymizer,
@@ -12,6 +12,7 @@ from ru_name_anonymizer.anonymizer import (
     inflect,
     preload,
 )
+from ru_name_anonymizer.locales import Locale, available_languages, register_locale
 
 __all__ = [
     "Anonymizer",
@@ -22,7 +23,10 @@ __all__ = [
     "anonymize_names",
     "anonymize_names_consistent",
     "find_names",
+    "Locale",
+    "available_languages",
     "inflect",
     "preload",
+    "register_locale",
 ]
-__version__ = "0.6.0"
+__version__ = "0.7.0"

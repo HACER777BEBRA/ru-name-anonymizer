@@ -15,7 +15,7 @@ from ru_name_anonymizer import (
     inflect,
 )
 from ru_name_anonymizer.anonymizer import AGGRESSIVE
-from ru_name_anonymizer.dictionary import declension, load
+from ru_name_anonymizer.locales.ru.dictionary import declension, load
 
 
 def rng(seed=0):

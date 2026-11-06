@@ -1,12 +1,13 @@
+"""Словарь русских имён (names.txt) и правила их склонения."""
+
 from functools import lru_cache
 from importlib import resources
 from typing import Dict, NamedTuple, Optional, Tuple
 
-CASES = ("nomn", "gent", "datv", "accs", "ablt", "loct")
+from ru_name_anonymizer.locales.base import CASES, Entry
+
 _STEM_ENDINGS = ("", "а", "я", "й", "ь")
 _MAX_CUT = 3
-
-Entry = Tuple[str, str, str]  # (лемма, род, падеж)
 
 # Имена, совпадающие с обычными словами. _COMMON распознаются всегда (если слово с заглавной),
 # _AMBIGUOUS только в режиме aggressive
@@ -73,7 +74,7 @@ def load() -> Dictionary:
     genders: Dict[str, str] = {}
     exceptions: Dict[str, Tuple[Optional[str], ...]] = {}
     exception_forms: Dict[str, Tuple[str, str]] = {}
-    text = resources.files("ru_name_anonymizer").joinpath("names.txt").read_text("utf-8")
+    text = resources.files(__package__).joinpath("names.txt").read_text("utf-8")
     for line in text.splitlines():
         if not line or line.startswith("#"):
             continue

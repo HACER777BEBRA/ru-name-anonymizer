@@ -1,3 +1,5 @@
+"""Ядро: поиск слов, группировка, подбор замен. Всё языковое — в locales/<код>/."""
+
 import random
 import re
 import threading
@@ -19,16 +21,15 @@ from typing import (
     Union,
 )
 
-from ru_name_anonymizer import english
-from ru_name_anonymizer.dictionary import CASES, Entry, declension, is_common, load, lookup
+from ru_name_anonymizer.locales import available_languages, get_locale
+from ru_name_anonymizer.locales.base import CASES, POOL_ROLES, Entry, Locale, Options
 
-LANGUAGES = ("ru", "en")
-# Что можно заменять: имена (словарь), отчества и фамилии (суффиксы, английский список), инициалы
+# Что можно заменять: имена (словарь), отчества и фамилии (суффиксы, списки), инициалы
 KINDS = {"first": "first", "patronymic": "patr", "surname": "surn", "initials": "init"}
 # Из чего состоит aggressive: любой регистр, фамилии без имени рядом, имена-омонимы
 AGGRESSIVE = ("any_case", "lone_surnames", "ambiguous")
-# Ключи параметра pools
-POOL_KEYS = ("first_m", "first_f", "patronymic", "surname")
+# Ключи параметра pools; с префиксом языка («be:first_m») — только для этого языка
+POOL_KEYS = tuple(POOL_ROLES)
 STATE_VERSION = 1
 
 Languages = Union[str, Iterable[str]]
@@ -36,163 +37,42 @@ Kinds = Union[str, Iterable[str]]
 Aggressive = Union[bool, str, Iterable[str]]
 Pools = Mapping[str, Union[str, Iterable[str]]]
 
-_FIRST_POOL = {
-    "m": [
-        "Александр", "Дмитрий", "Сергей", "Андрей", "Максим", "Иван", "Никита", "Артём",
-        "Владимир", "Кирилл", "Михаил", "Алексей", "Николай", "Павел", "Егор", "Денис",
-        "Антон", "Виктор", "Олег", "Игорь", "Станислав", "Евгений", "Василий", "Григорий",
-        "Тимофей", "Борис", "Константин", "Юрий", "Леонид", "Ярослав",
-    ],
-    "f": [
-        "Мария", "Анна", "Елена", "Ольга", "Наталья", "Екатерина", "Светлана", "Юлия",
-        "Дарья", "Ирина", "Татьяна", "Алина", "Марина", "Полина", "Валентина", "Галина",
-        "Ксения", "Вероника", "Евгения", "Лариса", "Оксана", "Людмила", "Виктория", "Инна",
-        "Анастасия", "Кристина", "Диана", "Елизавета", "Алла", "Нина",
-    ],
-}
-_PATR_STEMS = [
-    "Александров", "Дмитриев", "Сергеев", "Андреев", "Иванов", "Николаев", "Петров",
-    "Михайлов", "Владимиров", "Алексеев", "Павлов", "Борисов", "Григорьев", "Романов",
-    "Егоров", "Денисов", "Викторов", "Олегов", "Антонов", "Константинов", "Евгеньев",
-    "Юрьев", "Станиславов", "Тимофеев", "Леонидов", "Максимов", "Кириллов", "Игорев",
-    "Васильев", "Геннадьев",
-]
-_SURNAME_STEMS = {
-    "ov": [
-        "Иванов", "Смирнов", "Кузнецов", "Попов", "Соколов", "Лебедев", "Козлов", "Новиков",
-        "Морозов", "Волков", "Петров", "Васильев", "Зайцев", "Павлов", "Орлов", "Макаров",
-        "Андреев", "Фёдоров", "Михайлов", "Беляев", "Тарасов", "Белов", "Комаров", "Захаров",
-        "Борисов", "Яковлев", "Григорьев", "Романов", "Сергеев", "Фролов", "Жуков", "Крылов",
-    ],
-    "sk": [
-        "Достоевск", "Чайковск", "Маяковск", "Тарковск", "Станиславск", "Вяземск", "Белинск",
-        "Бродск", "Мусоргск", "Пржевальск", "Заболоцк", "Ковалевск", "Гребенск", "Ходынск",
-        "Тухачевск",
-    ],
-}
-
-_PATR_M = {"": "nomn", "а": "gent", "у": "datv", "ем": "ablt", "е": "loct"}
-_PATR_F = {"на": "nomn", "ны": "gent", "не": "datv", "ну": "accs", "ной": "ablt"}
-_SURN_M = {"": "nomn", "а": "gent", "у": "datv", "ым": "ablt", "е": "loct"}
-_SURN_F = {"а": "nomn", "ой": "gent", "у": "accs", "ым": "ablt"}
-_PATR_M_SUFFIX = {
-    "nomn": "ич",
-    "gent": "ича",
-    "datv": "ичу",
-    "accs": "ича",
-    "ablt": "ичем",
-    "loct": "иче",
-}
-_PATR_F_SUFFIX = {
-    "nomn": "на",
-    "gent": "ны",
-    "datv": "не",
-    "accs": "ну",
-    "ablt": "ной",
-    "loct": "не",
-}
-_SURN_M_SUFFIX = {"nomn": "", "gent": "а", "datv": "у", "accs": "а", "ablt": "ым", "loct": "е"}
-_SURN_F_SUFFIX = {"nomn": "а", "gent": "ой", "datv": "ой", "accs": "у", "ablt": "ой", "loct": "ой"}
-_SK_M = {"ий": "nomn", "ого": "gent", "ому": "datv", "им": "ablt", "ом": "loct"}
-_SK_F = {"ая": "nomn", "ой": "gent", "ую": "accs"}
-_SK_M_SUFFIX = {
-    "nomn": "ий",
-    "gent": "ого",
-    "datv": "ому",
-    "accs": "ого",
-    "ablt": "им",
-    "loct": "ом",
-}
-_SK_F_SUFFIX = {"nomn": "ая", "gent": "ой", "datv": "ой", "accs": "ую", "ablt": "ой", "loct": "ой"}
-# основы прилагательных на -ский, которые не фамилии
-_SK_STOP = {
-    "русск", "польск", "английск", "французск", "немецк", "украинск", "московск", "китайск",
-    "японск", "испанск", "итальянск", "еврейск", "детск", "городск", "морск", "сельск",
-    "российск", "всероссийск", "советск", "европейск", "американск", "азиатск", "петербургск",
-    "белорусск", "казахск", "грузинск", "армянск", "турецк", "шведск", "финск", "датск",
-    "норвежск", "канадск", "индийск", "корейск", "арабск", "минск", "мужск", "женск",
-}
-
-_PARTS = {  # инициалы, слово с заглавной, слово в любом регистре
-    "ru": (
-        r"(?<![А-ЯЁа-яё])[А-ЯЁ]\.(?:[  ]?[А-ЯЁ]\.)?",
-        r"[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)*",
-        r"[А-ЯЁа-яё]{2,}(?:-[А-ЯЁа-яё]{2,})*",
-    ),
-    "en": (
-        r"(?<![A-Za-z])[A-Z]\.(?:[  ]?[A-Z]\.)?",
-        r"[A-Z][a-z]+(?:-[A-Z][a-z]+)*",
-        r"[A-Za-z]{2,}(?:-[A-Za-z]{2,})*",
-    ),
-}
-_PATR_M_RE = re.compile(r"^([А-ЯЁ][а-яё]*?(?:ов|ев))ич(а|у|ем|е)?$")
-_PATR_F_RE = re.compile(r"^([А-ЯЁ][а-яё]*?(?:ов|ев))(на|ны|не|ну|ной)$")
-_SURN_RE = re.compile(r"^([А-ЯЁ][а-яё]+?(?:ов|ев|ёв|ин|ын))(а|у|ым|е|ой)?$")
-_SK_RE = re.compile(r"^([А-ЯЁ][а-яё]+?(?:ск|цк))(ий|ого|ому|им|ом|ая|ой|ую)$")
 _RUN_GAP = re.compile(r"^[  ]+$")
-_RU_NAME_RE = re.compile(r"^[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)*$")
-_EN_NAME_RE = re.compile(r"^[A-Z][a-z]+(?:-[A-Z][a-z]+)*$")
 
 
-class _Options(NamedTuple):
-    enabled: FrozenSet[str]  # включённые роли: отключённый источник не используется
-    flags: FrozenSet[str]  # включённые части aggressive
-    exclude: FrozenSet[str]  # слова, которые не трогаем (casefold)
+def __getattr__(name: str) -> Any:
+    if name == "LANGUAGES":  # список меняется при register_locale
+        return available_languages()
+    raise AttributeError(name)
 
 
-def _classify(token: str, opts: _Options):
-    """Возвращает (роль, данные); у всех ролей data = (лемма или основа, род, падеж)."""
-    if token[1:2] == ".":
-        return "init", (token, "c", "nomn")
-    if "-" in token:
-        return _classify_compound(token, opts)
-    return _classify_word(token, opts)
+def _classify(token: str, opts: Options, locales: Tuple[Locale, ...]):
+    """(роль, данные, локаль); у всех ролей data = (лемма или основа, род, падеж).
+
+    Токен разбирает первая из локалей с подходящим алфавитом, которая его узнала.
+    """
+    for loc in locales:
+        if not loc.owns(token):
+            continue
+        if token[1:2] == ".":
+            return "init", (token, "c", "nomn"), loc
+        if "-" in token:
+            role, data = _classify_compound(token, opts, loc)
+        else:
+            role, data = loc.classify_word(token, opts)
+        if role:
+            return role, data, loc
+    return None, None, None
 
 
 def _titled(token: str) -> bool:
     return token[0].isupper() and token[1:].islower()
 
 
-def _classify_word_en(token: str, opts: _Options):
-    titled = _titled(token)
-    word = token.capitalize() if "any_case" in opts.flags else token
-    if "first" in opts.enabled:
-        entry = english.lookup(word, "ambiguous" in opts.flags, titled)
-        if entry:
-            return "first", entry
-    if "surn" in opts.enabled and (titled or token.isupper()) and english.is_surname(word):
-        return "surn", (word, "c", "nomn")
-    return None, None
-
-
-def _classify_word(token: str, opts: _Options):
-    if token.isascii():
-        return _classify_word_en(token, opts)
-    word = token.capitalize() if "any_case" in opts.flags else token
-    if "first" in opts.enabled:
-        ambiguous = "ambiguous" in opts.flags
-        entry = lookup(word, ambiguous)
-        # «света», «ВЕРА» не с заглавной — скорее обычные слова, если омонимы не включены
-        if entry and (ambiguous or _titled(token) or not is_common(entry[0])):
-            return "first", entry
-    if "patr" in opts.enabled:
-        m = _PATR_M_RE.match(word)
-        if m:
-            return "patr", (m.group(1), "m", _PATR_M[m.group(2) or ""])
-        m = _PATR_F_RE.match(word)
-        if m:
-            return "patr", (m.group(1), "f", _PATR_F[m.group(2)])
-    if "surn" in opts.enabled and _titled(token):
-        info = _surname_info(token)
-        if info:
-            return "surn", info
-    return None, None
-
-
-def _classify_compound(token: str, opts: _Options):
+def _classify_compound(token: str, opts: Options, loc: Locale):
     """«Жан-Люк», «Салтыков-Щедрин»: достаточно узнать одну часть, заменяется всё слово."""
     parts = token.split("-")
-    infos = [_classify_word(part, opts) for part in parts]
+    infos = [loc.classify_word(part, opts) for part in parts]
     known = [(role, data) for role, data in infos if role]
     if not known:
         return None, None
@@ -204,29 +84,6 @@ def _classify_compound(token: str, opts: _Options):
         if found:
             return role, found[-1]
     return None, None
-
-
-def _surname_info(token: str) -> Optional[Entry]:
-    m = _SK_RE.match(token)
-    if m:
-        stem, ending = m.group(1), m.group(2)
-        # «-ческий» почти всегда прилагательное: «Технический», «Исторический»
-        if stem.lower() in _SK_STOP or stem.endswith("ческ"):
-            return None
-        if ending in _SK_F:
-            return stem, "f", _SK_F[ending]
-        return stem, "m", _SK_M[ending]
-    m = _SURN_RE.match(token)
-    if not m:
-        return None
-    stem, ending = m.group(1), m.group(2) or ""
-    if ending == "":
-        return stem, "m", "nomn"
-    if ending == "а":
-        return stem, "f", "nomn"
-    if ending == "ой":
-        return stem, "f", "gent"
-    return stem, "m", _SURN_M[ending]
 
 
 def _runs(text: str, pattern: re.Pattern) -> List[List[re.Match]]:
@@ -249,10 +106,19 @@ def _as_tuple(value: Union[str, Iterable[str]]) -> Tuple[str, ...]:
 
 def _normalize_languages(languages: Languages) -> Tuple[str, ...]:
     result = tuple(dict.fromkeys(_as_tuple(languages)))
-    unknown = [lang for lang in result if lang not in LANGUAGES]
+    known = available_languages()
+    unknown = [lang for lang in result if lang not in known]
     if unknown or not result:
-        raise ValueError(f"languages: ожидается непустой набор из {LANGUAGES}, получено {result!r}")
+        raise ValueError(f"languages: ожидается непустой набор из {known}, получено {result!r}")
     return result
+
+
+def _locales(languages: Tuple[str, ...]) -> Tuple[Locale, ...]:
+    return tuple(get_locale(code) for code in languages)
+
+
+def _all_locales() -> Tuple[Locale, ...]:
+    return _locales(available_languages())
 
 
 def _normalize_kinds(kinds: Kinds) -> FrozenSet[str]:
@@ -288,16 +154,23 @@ def _normalize_exclude(exclude: Optional[Iterable[str]]) -> FrozenSet[str]:
 
 
 @lru_cache(maxsize=None)
-def _pattern(languages: Tuple[str, ...], any_case: bool) -> re.Pattern:
-    index = 2 if any_case else 1
-    parts = [_PARTS[lang][0] for lang in languages] + [_PARTS[lang][index] for lang in languages]
-    return re.compile("|".join(parts))
+def _pattern(locales: Tuple[Locale, ...], any_case: bool) -> re.Pattern:
+    """Инициалы или слово в объединённом алфавите; чей это токен, решает _classify."""
+    up = "".join(loc.upper for loc in locales)
+    low = "".join(loc.lower for loc in locales)
+    initials = f"(?<![{up}{low}])[{up}]\\.(?:[  ]?[{up}]\\.)?"
+    if any_case:
+        word = f"[{up}{low}]{{2,}}(?:-[{up}{low}]{{2,}})*"
+    else:
+        word = f"[{up}][{low}]+(?:-[{up}][{low}]+)*"
+    return re.compile(f"{initials}|{word}")
 
 
 def preload(languages: Languages = ("ru",), kinds: Kinds = tuple(KINDS)) -> None:
-    """Загружает словарь заранее, чтобы первый вызов не тормозил."""
-    if "ru" in _normalize_languages(languages) and "first" in _normalize_kinds(kinds):
-        load()
+    """Загружает словари заранее, чтобы первый вызов не тормозил."""
+    roles = _normalize_kinds(kinds)
+    for loc in _locales(_normalize_languages(languages)):
+        loc.preload(roles)
 
 
 _PUBLIC_KIND = {role: kind for kind, role in KINDS.items()}
@@ -312,7 +185,7 @@ class NameEntity(NamedTuple):
     «Достоевского» → «Достоевский»; для инициалов — сам текст.
     gender — "m", "f" или "c" (не удалось определить).
     case — падеж: "nomn", "gent", "datv", "accs", "ablt", "loct"; для инициалов None.
-    language — "ru" или "en".
+    language — код языка, например "ru" или "en".
     """
 
     start: int
@@ -344,6 +217,7 @@ class _Token(NamedTuple):
     start: int
     end: int
     text: str
+    loc: Optional[Locale]  # локаль, узнавшая слово; None — не узнано
 
 
 class _Hit(NamedTuple):
@@ -354,48 +228,20 @@ class _Hit(NamedTuple):
     case: str
 
 
-# --- Склонение ---------------------------------------------------------------------------
-
-
-def _decline_first(name: str, case: str, gender: Optional[str]) -> str:
-    table = declension(name, gender if gender in ("m", "f") else None)
-    return table.get(case) or name
-
-
-def _decline_patr(stem: str, gender: str, case: str) -> str:
-    return stem + (_PATR_F_SUFFIX if gender == "f" else _PATR_M_SUFFIX)[case]
-
-
-def _decline_surname(stem: str, gender: str, case: str) -> str:
-    female = gender == "f"
-    if stem.lower().endswith(("ск", "цк")):
-        return stem + (_SK_F_SUFFIX if female else _SK_M_SUFFIX)[case]
-    return stem + (_SURN_F_SUFFIX if female else _SURN_M_SUFFIX)[case]
-
-
-def _parse_patr(name: str) -> Optional[Tuple[str, str]]:
-    """(основа, род) отчества в любом падеже."""
-    m = _PATR_M_RE.match(name)
-    if m:
-        return m.group(1), "m"
-    m = _PATR_F_RE.match(name)
-    if m:
-        return m.group(1), "f"
-    return None
-
-
 def inflect(
     name: str,
     case: Optional[str],
     kind: str = "first",
     gender: Optional[str] = None,
+    language: Optional[str] = None,
 ) -> str:
     """Ставит имя, отчество или фамилию в нужный падеж.
 
     Удобно в своей функции replace: inflect("Павел", entity.case) → «Павлу» для "datv".
     kind — "first", "patronymic", "surname" или "initials"; gender — "m", "f" или None
-    (род берётся из словаря или из самой формы). Английские имена, инициалы, case=None
-    и формы, которые склонять не умеем («Шевченко»), возвращаются как есть.
+    (род берётся из словаря или из самой формы). language — код языка (entity.language);
+    по умолчанию — первый язык, алфавитом которого записано слово. Несклоняемые языки,
+    инициалы, case=None и формы, которые склонять не умеем («Шевченко»), возвращаются как есть.
     """
     if kind not in KINDS:
         raise ValueError(f"kind: ожидается одно из {tuple(KINDS)}, получено {kind!r}")
@@ -403,132 +249,67 @@ def inflect(
         raise ValueError(f"case: ожидается одно из {CASES} или None, получено {case!r}")
     if gender not in (None, "m", "f", "c"):
         raise ValueError(f"gender: ожидается 'm', 'f', 'c' или None, получено {gender!r}")
-    if case is None or kind == "initials" or not name or name.isascii():
+    loc = _locales(_normalize_languages(language))[0] if language is not None else None
+    if case is None or kind == "initials" or not name:
         return name
-    if kind == "first":
-        return _decline_first(name, case, gender)
-    if kind == "patronymic":
-        parsed = _parse_patr(name)
-        if not parsed:
+    if loc is None:
+        loc = next((candidate for candidate in _all_locales() if candidate.owns(name)), None)
+        if loc is None:
             return name
-        stem, own = parsed
-        return _decline_patr(stem, gender if gender in ("m", "f") else own, case)
-    info = _surname_info(name)
-    if not info:
-        return name
-    return _decline_surname(info[0], gender if gender in ("m", "f") else info[1], case)
+    return loc.inflect(name, case, KINDS[kind], gender)
 
 
 # --- Пулы замен --------------------------------------------------------------------------
 
-_DEFAULT_POOLS: Dict[str, List[str]] = {
-    "first:ru:m": _FIRST_POOL["m"],
-    "first:ru:f": _FIRST_POOL["f"],
-    "first:en:m": english.FIRST["m"],
-    "first:en:f": english.FIRST["f"],
-    "patr": _PATR_STEMS,
-    "surn:ov": _SURNAME_STEMS["ov"],
-    "surn:sk": _SURNAME_STEMS["sk"],
-    "surn:en": english.SURNAMES,
-}
-
-
-@lru_cache(maxsize=1)
-def _derived_stems() -> Tuple[str, ...]:
-    """Основы вида «Иванов», «Сергеев», «Юрьев» из мужских имён словаря."""
-    stems = set()
-    for name, gender in load().genders.items():
-        if gender != "m" or len(name) < 3 or "-" in name:
-            continue
-        if name[-1] in "бвгдзклмнпрстфх":
-            stems.add(name + "ов")
-        elif name.endswith("ий"):
-            stems.add(name[:-2] + "ьев")
-        elif name.endswith(("ей", "ай", "уй", "ой")) or name[-1] == "ь":
-            stems.add(name[:-1] + "ев")
-    return tuple(sorted(stems))
-
 
 @lru_cache(maxsize=None)
-def _fallback_pool(category: str) -> Tuple[str, ...]:
-    """Запасной пул из словаря на случай, когда основной исчерпан (большие датасеты)."""
-    primary = set(_DEFAULT_POOLS[category])
-    if category.startswith("first:ru:"):
-        gender = category[-1]
-        names = (
-            n for n, g in load().genders.items()
-            if g == gender and "-" not in n and len(declension(n, gender)) == len(CASES)
-        )
-    elif category in ("patr", "surn:ov"):
-        names = iter(_derived_stems())
-    elif category == "surn:sk":
-        names = (s + "ск" for s in _derived_stems() if (s + "ск").lower() not in _SK_STOP)
-    else:  # английские пулы маленькие и запаса не имеют: расширяются через pools
-        return ()
-    return tuple(sorted(n for n in names if n not in primary))
+def _defaults(loc: Locale) -> Dict[str, List[str]]:
+    return loc.default_pools()
 
 
 class _PoolSet:
-    """Пулы замен по категориям; пользовательские категории без запасного пула."""
+    """Пулы замен: стандартные из локалей и пользовательские (без запасного пула)."""
 
-    def __init__(self, pools: Optional[Pools] = None) -> None:
-        self.primary: Dict[str, List[str]] = dict(_DEFAULT_POOLS)
-        self.custom: Set[str] = set()
-        for key, values in (pools or {}).items():
-            if key not in POOL_KEYS:
-                raise ValueError(f"pools: неизвестный ключ {key!r}, ожидается один из {POOL_KEYS}")
+    def __init__(self, pools: Optional[Pools] = None, locales: Tuple[Locale, ...] = ()) -> None:
+        self.custom: Dict[Tuple[str, str], List[str]] = {}
+        if not pools:
+            return
+        candidates = locales + tuple(loc for loc in _all_locales() if loc not in locales)
+        for key, values in pools.items():
+            lang, _, base = key.rpartition(":") if isinstance(key, str) else ("", "", key)
+            if base not in POOL_KEYS or (lang and lang not in available_languages()):
+                raise ValueError(
+                    f"pools: неизвестный ключ {key!r}, ожидается один из {POOL_KEYS}, "
+                    "можно с префиксом языка, например 'ru:first_m'"
+                )
             values = list(dict.fromkeys(_as_tuple(values)))
             if not values or not all(isinstance(v, str) for v in values):
                 raise ValueError(f"pools[{key!r}]: ожидается непустой список строк")
-            self._add(key, values)
+            self._add(base, values, (get_locale(lang),) if lang else candidates)
 
-    def _set(self, category: str, values: List[str]) -> None:
-        self.primary[category] = values
-        self.custom.add(category)
-
-    def _add(self, key: str, values: List[str]) -> None:
-        en = [v for v in values if v.isascii()]
-        ru = [v for v in values if not v.isascii()]
-        bad = [v for v in en if not _EN_NAME_RE.match(v)]
-        bad += [v for v in ru if not _RU_NAME_RE.match(v)]
+    def _add(self, key: str, values: List[str], candidates: Tuple[Locale, ...]) -> None:
+        groups: Dict[Locale, List[str]] = {}
+        bad = []
+        for value in values:
+            loc = next((c for c in candidates if c.is_name_shaped(value)), None)
+            if loc is None:
+                bad.append(value)
+            else:
+                groups.setdefault(loc, []).append(value)
         if bad:
             raise ValueError(f"pools[{key!r}]: ожидаются слова с заглавной буквы: {bad!r}")
-        if key in ("first_m", "first_f"):
-            gender = key[-1]
-            if ru:
-                self._set(f"first:ru:{gender}", ru)
-            if en:
-                self._set(f"first:en:{gender}", en)
-        elif key == "patronymic":
-            if en:
-                raise ValueError(f"pools['patronymic']: только русские отчества, получено {en!r}")
-            parsed = [_parse_patr(v) for v in ru]
-            if not all(p and _decline_patr(p[0], p[1], "nomn") == v for p, v in zip(parsed, ru)):
-                raise ValueError(
-                    "pools['patronymic']: ожидаются отчества в именительном падеже "
-                    f"на -ович/-евич/-овна/-евна, получено {ru!r}"
-                )
-            self._set("patr", list(dict.fromkeys(p[0] for p in parsed if p)))
-        else:  # surname
-            if en:
-                self._set("surn:en", en)
-            if ru:
-                stems = []
-                for value in ru:
-                    info = _surname_info(value)
-                    if not info or info[2] != "nomn":
-                        raise ValueError(
-                            "pools['surname']: ожидаются фамилии в именительном падеже "
-                            f"на -ов/-ев/-ин/-ын/-ский/-цкий, получено {value!r}"
-                        )
-                    stems.append(info[0])
-                stems = list(dict.fromkeys(stems))
-                sk = [s for s in stems if s.lower().endswith(("ск", "цк"))]
-                self._set("surn:sk", sk)
-                self._set("surn:ov", [s for s in stems if s not in sk])
+        for loc, group in groups.items():
+            for category, pool in loc.custom_pools(key, group).items():
+                self.custom[(loc.code, category)] = list(pool)
 
-    def fallback(self, category: str) -> Tuple[str, ...]:
-        return () if category in self.custom else _fallback_pool(category)
+    def get(self, loc: Locale, category: str) -> List[str]:
+        custom = self.custom.get((loc.code, category))
+        return custom if custom is not None else _defaults(loc)[category]
+
+    def fallback(self, loc: Locale, category: str) -> Tuple[str, ...]:
+        if (loc.code, category) in self.custom:
+            return ()
+        return loc.fallback_pool(category)
 
 
 _DEFAULT_POOL_SET = _PoolSet()
@@ -553,30 +334,35 @@ class _Faker:
         self.pools, self.used, self.rng, self.memo = pools, used, rng, memo
 
     def fake(self, hit: _Hit) -> str:
+        loc = hit.token.loc
         if hit.role == "first":
-            return self._first(hit.data, hit.gender)
+            return self._first(loc, hit.data, hit.gender)
         if hit.role == "patr":
             original, gender, case = hit.data
-            return _decline_patr(self._pick("patr", ("patr", original)), gender, case)
+            stem = self._pick(loc, loc.patronymic_category(), ("patr", original))
+            return loc.decline("patr", stem, gender, case)
         if hit.role == "surn":
-            return self._surname(hit.data, hit.gender, hit.case)
-        return self._initials(hit.token.text, hit.gender)
+            categories = loc.surname_categories(hit.data[0])
+            category = next((c for c in categories if self.pools.get(loc, c)), categories[0])
+            stem = self._pick(loc, category, ("surn", hit.data[0]))
+            return loc.decline("surn", stem, hit.gender, hit.case)
+        return self._initials(loc, hit.token.text, hit.gender)
 
-    def _pick(self, category: str, key: tuple) -> str:
+    def _pick(self, loc: Locale, category: str, key: tuple) -> str:
         memo, used, rng = self.memo, self.used, self.rng
         if memo is not None and key in memo:
             return memo[key]
-        candidates = self.pools.primary[category]
+        candidates = self.pools.get(loc, category)
         free = [c for c in candidates if c.lower() not in used]
         if free:
             value = rng.choice(free)
         else:
-            value = _choose_sparse(self.pools.fallback(category), used, rng)
+            value = _choose_sparse(self.pools.fallback(loc, category), used, rng)
             if value is None:
                 if memo is not None:
                     warnings.warn(
-                        f"Пул замен {category!r} исчерпан: разные имена получат одну замену. "
-                        "Расширьте его через pools или вызовите reset().",
+                        f"Пул замен {loc.code}:{category} исчерпан: разные имена получат одну "
+                        "замену. Расширьте его через pools или вызовите reset().",
                         RuntimeWarning,
                         stacklevel=2,
                     )
@@ -586,38 +372,28 @@ class _Faker:
             used.add(value.lower())
         return value
 
-    def _first(self, data: Entry, run_gender: str) -> str:
+    def _first(self, loc: Locale, data: Entry, run_gender: str) -> str:
         original, gender, case = data
         if gender == "c":
             gender = run_gender if run_gender in ("m", "f") else "m"
-        lang = "en" if original.isascii() else "ru"
-        name = self._pick(f"first:{lang}:{gender}", ("first", original, gender))
-        return name if lang == "en" else _decline_first(name, case, gender)
+        name = self._pick(loc, f"first:{gender}", ("first", original, gender))
+        return loc.decline("first", name, gender, case)
 
-    def _surname(self, data: Entry, gender: str, case: str) -> str:
-        if data[0].isascii():
-            return self._pick("surn:en", ("surn", data[0]))
-        kind, other = ("sk", "ov") if data[0].lower().endswith(("ск", "цк")) else ("ov", "sk")
-        category = f"surn:{kind}" if self.pools.primary[f"surn:{kind}"] else f"surn:{other}"
-        return _decline_surname(self._pick(category, ("surn", data[0])), gender, case)
-
-    def _initials(self, original: str, gender: str) -> str:
+    def _initials(self, loc: Locale, original: str, gender: str) -> str:
         gender = gender if gender in ("m", "f") else "m"
-        latin = original[0].isascii()  # между буквами может быть неразрывный пробел
-        letters = "[A-Z]" if latin else "[А-ЯЁ]"
-        pools = (english.FIRST[gender],) * 2 if latin else (_FIRST_POOL[gender], _PATR_STEMS)
+        letters = loc.letter_re  # между буквами может быть неразрывный пробел
         new = []
-        for index, letter in enumerate(re.findall(letters, original)):
+        for index, letter in enumerate(letters.findall(original)):
             key = ("init", index, letter)
             if self.memo is not None and key in self.memo:
                 new.append(self.memo[key])
                 continue
-            value = self.rng.choice(sorted({name[0] for name in pools[index]} - {letter}))
+            value = self.rng.choice(sorted(set(loc.initial_letters(gender, index)) - {letter}))
             if self.memo is not None:
                 self.memo[key] = value
             new.append(value)
         replacements = iter(new)
-        return re.sub(letters, lambda _: next(replacements), original)
+        return letters.sub(lambda _: next(replacements), original)
 
 
 # --- Публичный API -----------------------------------------------------------------------
@@ -648,12 +424,13 @@ class Anonymizer:
         pools: Optional[Pools] = None,
     ) -> None:
         self._languages = _normalize_languages(languages)
-        self._opts = _Options(
+        self._locales = _locales(self._languages)
+        self._opts = Options(
             _normalize_kinds(kinds), _normalize_aggressive(aggressive), _normalize_exclude(exclude)
         )
-        self._pools = _PoolSet(pools) if pools else _DEFAULT_POOL_SET
+        self._pools = _PoolSet(pools, self._locales) if pools else _DEFAULT_POOL_SET
         self._consistent = bool(consistent)
-        self._pattern = _pattern(self._languages, "any_case" in self._opts.flags)
+        self._pattern = _pattern(self._locales, "any_case" in self._opts.flags)
         self._rng = rng
         self._replace = replace
         self._memo: Dict[tuple, str] = {}
@@ -678,9 +455,9 @@ class Anonymizer:
         return self._consistent
 
     def preload(self) -> None:
-        """Загружает словарь заранее, если он понадобится при этих настройках."""
-        if "ru" in self._languages and "first" in self._opts.enabled:
-            load()
+        """Загружает словари заранее, если они понадобятся при этих настройках."""
+        for loc in self._locales:
+            loc.preload(self._opts.enabled)
 
     def reset(self) -> None:
         """Забывает замены, накопленные в режиме consistent."""
@@ -719,7 +496,7 @@ class Anonymizer:
 
     def find(self, text: str) -> List[NameEntity]:
         """Находит имена, ничего не заменяя; результат упорядочен по позиции."""
-        hits, _ = _analyze(text, self._pattern, self._opts)
+        hits, _ = _analyze(text, self._pattern, self._opts, self._locales)
         return [_entity(hit) for hit in hits]
 
     def anonymize(self, text: str) -> str:
@@ -727,7 +504,7 @@ class Anonymizer:
 
     def anonymize_detailed(self, text: str) -> AnonymizeResult:
         """Как anonymize, но вместе с текстом возвращает список сделанных замен."""
-        hits, originals = _analyze(text, self._pattern, self._opts)
+        hits, originals = _analyze(text, self._pattern, self._opts, self._locales)
         if not hits:
             return AnonymizeResult(text, [])
         rng = self._rng or random
@@ -788,19 +565,20 @@ def anonymize_names(
     "any_case" (имена в нижнем регистре и КАПСЕ), "lone_surnames" (фамилии без имени
     рядом), "ambiguous" (имена, совпадающие с обычными словами: «Вера», «Роман»).
 
-    languages — какие словари использовать: "ru", "en" или оба, например ("ru", "en").
-    Имя заменяется именем того же языка.
+    languages — какие языки использовать: "ru", "en" или несколько, например ("ru", "en");
+    список доступных — available_languages(). Имя заменяется именем того же языка.
 
     kinds — что заменять: "first" (имена по словарю), "patronymic" (отчества по суффиксам),
-    "surname" (фамилии по суффиксам и английскому списку), "initials". По умолчанию всё.
-    Отключённые виды не ищутся: без "first" русский словарь не загружается, а фамилии
+    "surname" (фамилии по суффиксам и спискам), "initials". По умолчанию всё.
+    Отключённые виды не ищутся: без "first" словарь имён не загружается, а фамилии
     заменяются и без имени рядом.
 
     replace — своя функция замены: NameEntity -> строка или None (стандартная замена).
     exclude — слова, которые не трогать («Ростов»); сравниваются без учёта регистра
     с самим словом и его начальной формой.
     pools — свои списки замен: {"first_m": [...], "first_f": [...], "patronymic": [...],
-    "surname": [...]}; имена в именительном падеже, склоняются автоматически.
+    "surname": [...]}; имена в именительном падеже, склоняются автоматически. Язык значения
+    определяется по алфавиту; ключ вида "ru:first_m" задаёт его явно.
     """
     return Anonymizer(
         rng=rng, aggressive=aggressive, languages=languages, kinds=kinds, replace=replace,
@@ -838,7 +616,9 @@ def anonymize_names_consistent(
 # --- Разбор текста -----------------------------------------------------------------------
 
 
-def _analyze(text: str, pattern: re.Pattern, opts: _Options) -> Tuple[List[_Hit], Set[str]]:
+def _analyze(
+    text: str, pattern: re.Pattern, opts: Options, locales: Tuple[Locale, ...]
+) -> Tuple[List[_Hit], Set[str]]:
     """Токены, которые нужно заменить, и множество исходных имён текста (в нижнем регистре)."""
     if not text or not pattern.search(text):
         return [], set()
@@ -846,7 +626,9 @@ def _analyze(text: str, pattern: re.Pattern, opts: _Options) -> Tuple[List[_Hit]
     enabled = opts.enabled
     plans = []
     used: Set[str] = set()
-    all_roles = [[r for m in run for r in _token_roles(m, opts)] for run in _runs(text, pattern)]
+    all_roles = [
+        [r for m in run for r in _token_roles(m, opts, locales)] for run in _runs(text, pattern)
+    ]
     # «Света не было», «Нате, держите»: одиночное имя-омоним в начале фразы считаем обычным
     # словом, если в тексте оно ни разу не встретилось как имя в другом месте
     doubtful = set() if "ambiguous" in opts.flags else _doubtful_common(text, all_roles)
@@ -860,7 +642,7 @@ def _analyze(text: str, pattern: re.Pattern, opts: _Options) -> Tuple[List[_Hit]
                 # «White», «Young» без имени или инициалов рядом — скорее обычные слова
                 anchors = [
                     r for r in roles
-                    if r[1] == "surn" and (has_init or not english.is_common_word(r[2][0]))
+                    if r[1] == "surn" and (has_init or not r[0].loc.is_common_word(r[2][0]))
                 ]
             if not anchors and "init" in enabled:
                 # инициалы без фамилии рядом: только двухбуквенные, «пункт Б.» не трогаем
@@ -883,57 +665,45 @@ def _entity(hit: _Hit) -> NameEntity:
     tok, role, data = hit.token, hit.role, hit.data
     case: Optional[str]
     if role == "first":
-        gender = hit.gender if data[1] == "c" else data[1]
-        normal, case = data[0], data[2]
+        gender, case = (hit.gender if data[1] == "c" else data[1]), data[2]
     elif role == "patr":
         gender, case = data[1], data[2]
-        normal = data[0] + ("ич" if gender == "m" else "на")
     elif role == "surn":
         gender, case = hit.gender, hit.case
-        normal = _surname_normal(data[0], gender)
     else:
-        gender, case, normal = hit.gender, None, tok.text
-    language = "en" if tok.text.isascii() else "ru"
+        return NameEntity(tok.start, tok.end, tok.text, "initials", tok.text, hit.gender, None,
+                          tok.loc.code)
+    normal = tok.loc.normal_form(role, data, gender)
     return NameEntity(tok.start, tok.end, tok.text, _PUBLIC_KIND[role], normal, gender, case,
-                      language)
+                      tok.loc.code)
 
 
-def _surname_normal(stem: str, gender: str) -> str:
-    female = gender == "f"
-    if stem.isascii():
-        return stem
-    if stem.lower().endswith(("ск", "цк")):
-        return stem + ("ая" if female else "ий")
-    return stem + ("а" if female else "")
-
-
-def _excluded(text: str, role: str, data: Entry, exclude: FrozenSet[str]) -> bool:
-    """Слово или его начальная форма в exclude; фамилия — в обоих родах."""
-    forms = [text]
+def _excluded(tok: _Token, role: str, data: Entry, exclude: FrozenSet[str]) -> bool:
+    """Слово или его начальная форма в exclude; отчество и фамилия — в обоих родах."""
+    forms = [tok.text]
     if role == "first":
-        forms.append(data[0])
-    elif role == "patr":
-        forms += [data[0] + "ич", data[0] + "на"]
-    elif role == "surn":
-        forms += [_surname_normal(data[0], "m"), _surname_normal(data[0], "f")]
+        forms.append(tok.loc.normal_form(role, data, data[1]))
+    elif role in ("patr", "surn"):
+        forms += [tok.loc.normal_form(role, data, "m"), tok.loc.normal_form(role, data, "f")]
     return any(form.casefold() in exclude for form in forms)
 
 
-def _token_roles(m: re.Match, opts: _Options):
+def _token_roles(m: re.Match, opts: Options, locales: Tuple[Locale, ...]):
     """[(токен, роль, данные)]; нераспознанное составное слово разбирается по частям."""
-    role, data = _classify(m.group(), opts)
+    role, data, loc = _classify(m.group(), opts, locales)
     if role or "-" not in m.group():
-        tokens = [(_Token(m.start(), m.end(), m.group()), role, data)]
+        tokens = [(_Token(m.start(), m.end(), m.group(), loc), role, data)]
     else:
         # «Мария-то», «Ивану-ка»: целиком не имя, но часть может быть именем
         tokens, start = [], m.start()
         for part in m.group().split("-"):
-            tokens.append((_Token(start, start + len(part), part), *_classify_word(part, opts)))
+            role, data, loc = _classify(part, opts, locales)
+            tokens.append((_Token(start, start + len(part), part, loc), role, data))
             start += len(part) + 1
     if not opts.exclude:
         return tokens
     return [
-        (tok, None, None) if role and _excluded(tok.text, role, data, opts.exclude)
+        (tok, None, None) if role and _excluded(tok, role, data, opts.exclude)
         else (tok, role, data)
         for tok, role, data in tokens
     ]
@@ -946,7 +716,7 @@ def _doubtful_common(text: str, all_roles) -> Set[int]:
     for roles in all_roles:
         known = [r for r in roles if r[1]]
         for tok, role, data in known:
-            if role != "first" or not is_common(data[0]):
+            if role != "first" or not tok.loc.is_common_name(data[0]):
                 continue
             if len(known) == 1 and _at_sentence_start(text, tok.start):
                 doubtful[id(roles)] = data[0]
@@ -956,7 +726,7 @@ def _doubtful_common(text: str, all_roles) -> Set[int]:
 
 
 def _at_sentence_start(text: str, start: int) -> bool:
-    before = text[:start].rstrip("  \t\r\n«\"„(—–-")
+    before = text[:start].rstrip("  \t\r\n«\"„(—–-")
     return not before or before[-1] in ".!?…"
 
 

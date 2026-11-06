@@ -25,14 +25,15 @@ pip install git+https://github.com/HACER777BEBRA/ru-name-anonymizer
 | `anonymize_names_consistent(...)` | Одно и то же имя всегда получает одну замену, разные — разные |
 | `find_names(text, aggressive=False, languages=("ru",), kinds=все, exclude=None)` | Находит имена с позициями, ничего не заменяя |
 | `Anonymizer(...)` | Настройки один раз, согласованность между вызовами, сохранение состояния |
-| `inflect(name, case, kind="first", gender=None)` | Ставит имя, отчество или фамилию в нужный падеж |
+| `inflect(name, case, kind="first", gender=None, language=None)` | Ставит имя, отчество или фамилию в нужный падеж |
 | `preload(languages=("ru",), kinds=все)` | Загружает словарь заранее |
+| `available_languages()`, `register_locale(locale)` | Список языков и подключение своего (см. «Свой язык») |
 
 Для воспроизводимых замен передайте `rng=random.Random(0)`. Пакет типизирован (`py.typed`).
 
 ## Параметры
 
-**`languages`** — `"ru"` (по умолчанию), `"en"` или оба. Имя заменяется именем того же языка и рода. Английский словарь небольшой (≈70 имён и 50 фамилий) и не склоняется: «John's» → «David's».
+**`languages`** — `"ru"` (по умолчанию), `"en"` или несколько, например `("ru", "en")`. Имя заменяется именем того же языка и рода. Если слово записано буквами, общими для нескольких языков, его разбирает первый в списке язык, который его узнал. Английский словарь небольшой (≈70 имён и 50 фамилий) и не склоняется: «John's» → «David's».
 
 **`kinds`** — что заменять:
 
@@ -137,7 +138,7 @@ Anonymizer(consistent=True).load_state(state)   # заменяет состоя�
 | `aggressive=True` | ≈70 мс |
 
 - **Холодный старт.** Словарь (≈0,3 МБ на диске) грузится лениво. В сервисе вызовите `preload()` при старте, чтобы первый запрос не ждал.
-- **Только нужное.** Без `"first"` в `kinds` или без `"ru"` в `languages` русский словарь не загружается вовсе.
+- **Только нужное.** Без `"first"` в `kinds` или без `"ru"` в `languages` русский словарь не загружается вовсе; локали импортируются только при первом обращении.
 - **Один проход.** Текст разбирается одним регулярным выражением, результаты разбора слов кэшируются, поэтому время растёт линейно с длиной текста.
 - **Потоки.** Один `Anonymizer` можно вызывать из нескольких потоков: в `consistent` вызовы идут по очереди под блокировкой, без `consistent` общего состояния нет. Для параллельной обработки большого корпуса удобнее процессы с общей таблицей замен через `export_state()`/`load_state()`.
 - **Память в `consistent`.** Таблица замен растёт с числом разных имён (≈90 байт JSON на имя). Для независимых документов вызывайте `reset()`.
@@ -150,6 +151,45 @@ Anonymizer(consistent=True).load_state(state)   # заменяет состоя�
 - **Фамилии** на `-ов/-ев/-ин/-ын/-ский/-цкий` заменяются только рядом с именем, отчеством или инициалами (прилагательные вроде «Российский» отсеиваются).
 - Понимаются инициалы («Иванов И.И.», «А.С.Пушкин»), имена через дефис («Жан-Люк»), омонимы с заглавной буквы («Света»). Имена, уже встреченные в тексте, не выбираются в качестве замены.
 - Формы одного имени («Дмитрий» и «Дима») считаются разными людьми.
+
+## Свой язык
+
+Всё, что зависит от языка, лежит в `src/ru_name_anonymizer/locales/<код>/`: алфавит, словарь, правила распознавания отчеств и фамилий, склонение и списки замен. Ядро (`anonymizer.py`) общее: находит слова, группирует «имя + отчество + фамилия», подбирает замены и следит за согласованностью.
+
+```
+locales/
+  base.py          # класс Locale — интерфейс локали
+  ru/              # __init__.py (RussianLocale), dictionary.py, morphology.py, pools.py, names.txt
+  en/              # __init__.py (EnglishLocale), names.py
+```
+
+Новый язык — это подкласс `Locale`. Обязательно задать `code`, буквы `upper`/`lower` (содержимое класса символов регулярного выражения), `classify_word` и `default_pools`. Остальное необязательно и по умолчанию означает «не склоняется»: `decline`, `inflect`, `normal_form` (склонение), `surname_categories`/`custom_pools` (свои категории замен), `fallback_pool` (запас для больших объёмов), `is_common_name`/`is_common_word` (омонимы), `preload`.
+
+```python
+from ru_name_anonymizer import Locale, anonymize_names, register_locale
+from ru_name_anonymizer.locales import titled
+
+class BelarusianLocale(Locale):
+    code = "be"
+    upper = "А-ЗЙ-ПР-ШЫЬЭЮЯЁІЎ"
+    lower = "а-зй-пр-шыьэюяёіў'"
+    NAMES = {"Алесь": "m", "Васіль": "m", "Алеся": "f"}
+
+    def classify_word(self, token, opts):
+        if "first" in opts.enabled and token in self.NAMES:
+            return "first", (token, self.NAMES[token], "nomn")
+        if "surn" in opts.enabled and titled(token) and token.endswith(("ук", "ёнак")):
+            return "surn", (token, "c", "nomn")
+        return None, None
+
+    def default_pools(self):
+        return {"first:m": ["Міхась", "Сымон"], "first:f": ["Ганна", "Ядвіся"], "surn": ["Ткачук", "Мельнік"]}
+
+register_locale(BelarusianLocale())
+anonymize_names("Васіль Ткачук", languages=("be", "ru"))
+```
+
+Чтобы язык стал встроенным, положите такой класс в `locales/be/__init__.py` с `LOCALE = BelarusianLocale()`: пакет найдётся сам, `register_locale` не нужен. Файлы данных (`*.txt`) в папке локали попадают в сборку автоматически. Свои замены для конкретного языка: `pools={"be:first_m": [...]}`.
 
 ## Ограничения
 
@@ -165,7 +205,7 @@ pip install -e ".[dev]"
 ruff check . && pytest
 ```
 
-Словарь `src/ru_name_anonymizer/names.txt` — текст вида `Анна f` или `Павел m Павла Павлу Павла Павлом Павле` для исключений. Пересобирается `tools/build_names.py` (нужны `pymorphy2==0.9.1`, `pymorphy2-dicts-ru`, `setuptools<81`, только для сборки); скрипт сверяет правила склонения с pymorphy2.
+Словарь `src/ru_name_anonymizer/locales/ru/names.txt` — текст вида `Анна f` или `Павел m Павла Павлу Павла Павлом Павле` для исключений. Пересобирается `tools/build_names.py` (нужны `pymorphy2==0.9.1`, `pymorphy2-dicts-ru`, `setuptools<81`, только для сборки); скрипт сверяет правила склонения с pymorphy2.
 
 ## Лицензии
 

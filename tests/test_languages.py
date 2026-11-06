@@ -33,7 +33,7 @@ def test_replacement_keeps_language():
 
 
 def test_english_gender_kept():
-    from ru_name_anonymizer import english
+    from ru_name_anonymizer.locales.en import names as english
 
     for seed in range(20):
         out = anonymize_names("Mary Smith", random.Random(seed), languages="en")
@@ -85,7 +85,7 @@ def test_kinds_only_first():
 
 
 def test_kinds_only_patronymic_does_not_load_dictionary():
-    from ru_name_anonymizer import dictionary
+    from ru_name_anonymizer.locales.ru import dictionary
 
     dictionary.load.cache_clear()
     out = anonymize_names("Иван Петрович Сидоров", rng(), kinds="patronymic").split()

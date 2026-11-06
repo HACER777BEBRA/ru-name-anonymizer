@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Optional
 
-from ru_name_anonymizer.dictionary import Entry
+from ru_name_anonymizer.locales.base import Entry
 
 _MALE = """
 James John Robert Michael William David Richard Joseph Thomas Charles Christopher Daniel

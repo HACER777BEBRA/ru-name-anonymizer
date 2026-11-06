@@ -3,8 +3,10 @@ import random
 import pytest
 
 from ru_name_anonymizer import anonymize_names, anonymize_names_consistent
-from ru_name_anonymizer.anonymizer import _FIRST_POOL, _PATR_STEMS, _SURNAME_STEMS
-from ru_name_anonymizer.dictionary import declension
+from ru_name_anonymizer.locales.ru.dictionary import declension
+from ru_name_anonymizer.locales.ru.pools import FIRST as _FIRST_POOL
+from ru_name_anonymizer.locales.ru.pools import PATR_STEMS as _PATR_STEMS
+from ru_name_anonymizer.locales.ru.pools import SURNAME_STEMS as _SURNAME_STEMS
 
 
 @pytest.mark.parametrize(
