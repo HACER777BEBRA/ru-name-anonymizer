@@ -3,4 +3,4 @@
 from ru_name_anonymizer.anonymizer import anonymize_names, anonymize_names_consistent, preload
 
 __all__ = ["anonymize_names", "anonymize_names_consistent", "preload"]
-__version__ = "0.3.0"
+__version__ = "0.4.0"

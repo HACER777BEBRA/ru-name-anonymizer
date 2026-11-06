@@ -21,7 +21,7 @@ def test_lookup(token, lemma, case):
     assert found is not None and found[0] == lemma and found[2] == case
 
 
-@pytest.mark.parametrize("token", ["Москва", "Привет", "Мир", "Март", "Вера"])
+@pytest.mark.parametrize("token", ["Москва", "Привет", "Мир", "Март", "Роман"])
 def test_common_words_are_not_names(token):
     assert lookup(token) is None
 

@@ -8,19 +8,34 @@ _MAX_CUT = 3
 
 Entry = Tuple[str, str, str]  # (лемма, род, падеж)
 
-# Имена, совпадающие с обычными словами; распознаются только в режиме aggressive
-_AMBIGUOUS = {
+# Имена, совпадающие с обычными словами. _COMMON распознаются всегда (если слово с заглавной),
+# _AMBIGUOUS только в режиме aggressive
+_COMMON = {
+    "Света": ("f", "Светы Свете Свету Светой Свете"),
     "Вера": ("f", "Веры Вере Веру Верой Вере"),
+    "Ната": ("f", "Наты Нате Нату Натой Нате"),
+}
+_AMBIGUOUS = {
     "Надежда": ("f", "Надежды Надежде Надежду Надеждой Надежде"),
     "Любовь": ("f", "Любови Любови Любовь Любовью Любови"),
     "Роман": ("m", "Романа Роману Романа Романом Романе"),
 }
-_AMBIGUOUS_GENDERS = {lemma: gender for lemma, (gender, _) in _AMBIGUOUS.items()}
-_AMBIGUOUS_FORMS: Dict[str, Tuple[str, str]] = {}
-for _lemma, (_, _forms) in _AMBIGUOUS.items():
-    _AMBIGUOUS_FORMS.setdefault(_lemma, (_lemma, "nomn"))
-    for _case, _form in zip(CASES[1:], _forms.split()):
-        _AMBIGUOUS_FORMS.setdefault(_form, (_lemma, _case))
+_AMBIGUOUS_GENDERS = {
+    lemma: gender for lemma, (gender, _) in {**_COMMON, **_AMBIGUOUS}.items()
+}
+
+
+def _index_forms(table) -> Dict[str, Tuple[str, str]]:
+    index: Dict[str, Tuple[str, str]] = {}
+    for lemma, (_, forms) in table.items():
+        index.setdefault(lemma, (lemma, "nomn"))
+        for case, form in zip(CASES[1:], forms.split()):
+            index.setdefault(form, (lemma, case))
+    return index
+
+
+_COMMON_FORMS = _index_forms(_COMMON)
+_AMBIGUOUS_FORMS = _index_forms(_AMBIGUOUS)
 
 
 class Dictionary(NamedTuple):
@@ -73,12 +88,21 @@ def load() -> Dictionary:
     return Dictionary(genders, exceptions, exception_forms)
 
 
+def is_common(lemma: str) -> bool:
+    """Имя из _COMMON: совпадает с обычным словом, но распознаётся и без aggressive."""
+    return lemma in _COMMON
+
+
 def declension(lemma: str) -> Dict[str, str]:
     """Падеж -> словоформа для леммы из словаря или с регулярным окончанием."""
     d = load()
+    gender = d.genders.get(lemma, "m")
+    regular = regular_forms(lemma, gender) or ()
     forms = d.exceptions.get(lemma)
     if forms is None:
-        forms = regular_forms(lemma, d.genders.get(lemma, "m")) or ()
+        forms = regular
+    else:  # пропуски в исключениях добираем по правилам, чтобы падеж не терялся при замене
+        forms = tuple(f or (regular[i] if i < len(regular) else None) for i, f in enumerate(forms))
     table = {"nomn": lemma}
     table.update({case: f for case, f in zip(CASES[1:], forms) if f})
     return table
@@ -93,6 +117,8 @@ def lookup(token: str, ambiguous: bool = False) -> Optional[Entry]:
     found = []
     if token in d.exception_forms:
         found.append(d.exception_forms[token])
+    if token in _COMMON_FORMS:
+        found.append(_COMMON_FORMS[token])
     if ambiguous and token in _AMBIGUOUS_FORMS:
         found.append(_AMBIGUOUS_FORMS[token])
     for cut in range(1, _MAX_CUT + 1):

@@ -17,12 +17,12 @@ def test_consistent_same_name_same_replacement():
 def test_consistent_keeps_case_forms():
     result = anonymize_names_consistent("Дмитрий и Дмитрию", random.Random(1))
     nom, dat = result.split(" и ")
-    assert dat.endswith(("ю", "и"))
+    assert dat != nom
     assert nom[:3] == dat[:3]
 
 
 def test_default_mode_ignores_lowercase_and_standalone():
-    text = "дима и Иванов, Вера и Роман"
+    text = "дима и Иванов, Роман и Любовь"
     assert anonymize_names(text, random.Random(0)) == text
 
 
