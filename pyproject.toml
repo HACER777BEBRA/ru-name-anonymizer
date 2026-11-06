@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,14 +8,19 @@ version = "1.0.0"
 description = "Анонимизация русских имён, отчеств и фамилий без ML и тяжёлых зависимостей"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["russian", "anonymization", "names", "nlp", "pii"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Natural Language :: Russian",
-    "License :: OSI Approved :: MIT License",
 ]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/HACER777BEBRA/ru-name-anonymizer"
+Source = "https://github.com/HACER777BEBRA/ru-name-anonymizer"
+Issues = "https://github.com/HACER777BEBRA/ru-name-anonymizer/issues"
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
