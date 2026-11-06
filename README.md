@@ -285,6 +285,6 @@ ruff check . && pytest
 
 Словарь `src/ru_name_anonymizer/locales/ru/names.txt` — текст вида `Анна f` или `Павел m Павла Павлу Павла Павлом Павле` для исключений. Пересобирается `tools/build_names.py` (нужны `pymorphy2==0.9.1`, `pymorphy2-dicts-ru`, `setuptools<81`, только для сборки); скрипт сверяет правила склонения с pymorphy2.
 
-## Лицензия
+## Лицензии
 
-MIT ([LICENSE](LICENSE)).
+Код — MIT ([LICENSE](LICENSE)). Словарь имён `names.txt` получен из OpenCorpora (через pymorphy2-dicts-ru) и распространяется по CC BY-SA 3.0 ([DATA-LICENSE.md](DATA-LICENSE.md)).

@@ -8,8 +8,8 @@ version = "1.0.0"
 description = "Анонимизация русских имён, отчеств и фамилий без ML и тяжёлых зависимостей"
 readme = "README.md"
 requires-python = ">=3.9"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "MIT AND CC-BY-SA-3.0"
+license-files = ["LICENSE", "DATA-LICENSE.md"]
 keywords = ["russian", "anonymization", "names", "nlp", "pii"]
 classifiers = [
     "Programming Language :: Python :: 3",
