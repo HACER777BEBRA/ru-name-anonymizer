@@ -50,12 +50,12 @@ _AMBIGUOUS_GENDERS: Dict[str, str] = {
 _SURNAME_SET = frozenset(_SURNAMES) - _GENDERS.keys() - _AMBIGUOUS_GENDERS.keys()
 
 
-def lookup(word: str, aggressive: bool, titled: bool) -> Optional[Entry]:
+def lookup(word: str, ambiguous: bool, titled: bool) -> Optional[Entry]:
     """Имя из словаря как (имя, род, nomn); titled — слово в исходном тексте с заглавной."""
     if len(word) < 3:
         return None
     gender = _GENDERS.get(word)
-    if gender is None and aggressive and titled:
+    if gender is None and ambiguous and titled:
         gender = _AMBIGUOUS_GENDERS.get(word)
     return (word, gender, "nomn") if gender else None
 

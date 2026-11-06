@@ -9,6 +9,7 @@ from ru_name_anonymizer.anonymizer import (
     anonymize_names,
     anonymize_names_consistent,
     find_names,
+    inflect,
     preload,
 )
 
@@ -21,6 +22,7 @@ __all__ = [
     "anonymize_names",
     "anonymize_names_consistent",
     "find_names",
+    "inflect",
     "preload",
 ]
-__version__ = "0.5.0"
+__version__ = "0.6.0"

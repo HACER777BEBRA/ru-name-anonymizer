@@ -93,10 +93,13 @@ def is_common(lemma: str) -> bool:
     return lemma in _COMMON
 
 
-def declension(lemma: str) -> Dict[str, str]:
-    """Падеж -> словоформа для леммы из словаря или с регулярным окончанием."""
+def declension(lemma: str, gender: Optional[str] = None) -> Dict[str, str]:
+    """Падеж -> словоформа для леммы из словаря или с регулярным окончанием.
+
+    gender нужен для имён не из словаря: «Нинель» склоняется по-разному в разных родах.
+    """
     d = load()
-    gender = d.genders.get(lemma, "m")
+    gender = gender or d.genders.get(lemma, "m")
     regular = regular_forms(lemma, gender) or ()
     forms = d.exceptions.get(lemma)
     if forms is None:
