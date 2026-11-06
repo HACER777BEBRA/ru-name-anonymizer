@@ -1,5 +1,9 @@
 # ru-name-anonymizer
 
+[![PyPI](https://img.shields.io/pypi/v/ru-name-anonymizer)](https://pypi.org/project/ru-name-anonymizer/)
+[![Python](https://img.shields.io/pypi/pyversions/ru-name-anonymizer)](https://pypi.org/project/ru-name-anonymizer/)
+[![CI](https://github.com/HACER777BEBRA/ru-name-anonymizer/actions/workflows/ci.yml/badge.svg)](https://github.com/HACER777BEBRA/ru-name-anonymizer/actions/workflows/ci.yml)
+
 Анонимизация русских (и английских) имён, отчеств и фамилий в тексте, а также ников и других идентификаторов, которые приложение передаёт во время работы. Чистый Python без ML-моделей и внешних зависимостей: словарь имён лежит в пакете, отчества и фамилии распознаются по суффиксам.
 
 ```python
@@ -12,6 +16,12 @@ anonymize_names("Позвони Александру Сергеевичу Пет
 Замена сохраняет род и падеж: «Диме» → «Ивану», «Марии Ивановне» → «Ольге Михайловне».
 
 ## Установка
+
+```bash
+pip install ru-name-anonymizer
+```
+
+Нужен Python 3.10 или новее, внешних зависимостей нет. Версия из репозитория, ещё не вышедшая на PyPI:
 
 ```bash
 pip install git+https://github.com/HACER777BEBRA/ru-name-anonymizer
